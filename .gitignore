@@ -1,0 +1,4 @@
+.platform/
+.DS_Store
+*.swp
+*.tmp

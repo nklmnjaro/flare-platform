@@ -1,0 +1,10 @@
+.git
+.platform/*
+!.platform/reference/
+.platform/reference/*
+!.platform/reference/server
+docs
+integrations
+tests
+tools
+.github

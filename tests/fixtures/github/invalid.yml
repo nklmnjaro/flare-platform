@@ -1,0 +1,7 @@
+---
+name: Invalid workflow
+on: [push]
+jobs:
+  broken:
+    runs-on: [ubuntu-latest
+    steps: []

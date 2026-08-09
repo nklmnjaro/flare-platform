@@ -1,0 +1,9 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flare-platform-ownership
+  namespace: kube-system
+data:
+  owner: flare-platform-infra
+  cluster-name: flare-platform-dev

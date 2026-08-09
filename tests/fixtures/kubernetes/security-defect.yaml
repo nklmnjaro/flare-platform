@@ -1,0 +1,20 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-defect
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-defect
+  template:
+    metadata:
+      labels:
+        app: security-defect
+    spec:
+      containers:
+        - name: app
+          image: busybox:latest
+          securityContext:
+            privileged: true

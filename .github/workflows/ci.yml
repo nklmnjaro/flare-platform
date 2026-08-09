@@ -1,0 +1,49 @@
+---
+name: Platform CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bootstrap tools
+        run: make bootstrap
+      - name: Prove negative fixtures
+        run: make prove-gates
+      - name: Static checks
+        run: make check
+
+  kind-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: static
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bootstrap tools
+        run: make bootstrap
+      - name: Verify disposable Kubernetes path
+        run: |
+          set -euo pipefail
+          trap 'make kind-down' EXIT
+          make kind-smoke
+          make kind-negative

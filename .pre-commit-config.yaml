@@ -1,0 +1,15 @@
+---
+repos:
+  - repo: local
+    hooks:
+      - id: platform-fast-checks
+        name: platform fast checks
+        entry: tools/quality/pre-commit-fast.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: conventional-commit
+        name: conventional commit policy
+        entry: tools/quality/check-commit-message.sh
+        language: system
+        stages: [commit-msg]

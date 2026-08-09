@@ -1,0 +1,18 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invalid-schema
+spec:
+  replicas: many
+  selector:
+    matchLabels:
+      app: invalid-schema
+  template:
+    metadata:
+      labels:
+        app: invalid-schema
+    spec:
+      containers:
+        - name: app
+          image: invalid.example/test:fixture
