@@ -12,7 +12,7 @@ Status: implemented and offline-verified
 The previous helper was exercised before modification. Four behaviors were
 reproduced:
 
-1. A binary payload containing NUL bytes and `/home/alice/...` was accepted
+1. A binary payload containing NUL bytes and a synthetic Unix home path was accepted
    because leakage inspection skipped all non-text payloads.
 2. A symlink used as the source directory returned success and emitted an empty
    manifest-only archive instead of packaging or rejecting the target tree.

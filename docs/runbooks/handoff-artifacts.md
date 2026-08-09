@@ -71,6 +71,7 @@ contract for genuinely large evidence.
 - terminal Unix, macOS, root, and Windows home-directory forms;
 - per-entry, total-payload, entry-count, and outer-file limits;
 - output boundary resolution through a symlinked parent.
+- current tracked and non-ignored source can package through this same boundary.
 
 The staging directory is disposable. Never edit an archive after packaging.
 Recreate it from final staged content instead.

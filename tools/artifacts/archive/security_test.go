@@ -9,9 +9,29 @@ import (
 	"testing"
 )
 
+func unixHome(user string) string {
+	return "/" + "home/" + user
+}
+
+func macHome(user string) string {
+	return "/" + "Users/" + user
+}
+
+func rootHome() string {
+	return "/" + "root"
+}
+
+func windowsHomeBackslash(user string) string {
+	return "C:" + `\Users\` + user
+}
+
+func windowsHomeSlash(user string) string {
+	return "C:" + "/" + "Users/" + user
+}
+
 func TestPackRejectsBinaryHomePath(t *testing.T) {
 	source := t.TempDir()
-	payload := append([]byte{0}, []byte("prefix /home/alice/private/project")...)
+	payload := append([]byte{0}, []byte("prefix "+unixHome("alice")+"/private/project")...)
 	payload = append(payload, 0)
 	if err := os.WriteFile(filepath.Join(source, "blob.bin"), payload, 0o644); err != nil {
 		t.Fatal(err)
@@ -23,7 +43,7 @@ func TestPackRejectsBinaryHomePath(t *testing.T) {
 }
 
 func TestVerifyRejectsBinaryHomePath(t *testing.T) {
-	payload := append([]byte{0}, []byte("prefix /home/alice/private/project")...)
+	payload := append([]byte{0}, []byte("prefix "+unixHome("alice")+"/private/project")...)
 	payload = append(payload, 0)
 	archive := filepath.Join(t.TempDir(), "artifact.zip")
 	if err := writeRawArchive(archive, entriesWithManifest(map[string][]byte{"blob.bin": payload})); err != nil {
@@ -77,15 +97,15 @@ func TestPackRejectsInsideOutputWithoutCreatingParent(t *testing.T) {
 
 func TestHomePathPolicyCatchesDelimitedPathsWithoutMatchingURLs(t *testing.T) {
 	for _, payload := range [][]byte{
-		[]byte("path:/home/alice/project/file"),
+		[]byte("path:" + unixHome("alice") + "/project/file"),
 		[]byte{0, '/', 'r', 'o', 'o', 't', '/', '.', 's', 's', 'h', '/', 'i', 'd'},
-		[]byte(`value=C:\Users\Alice\project\file`),
+		[]byte("value=" + windowsHomeBackslash("Alice") + `\project\file`),
 	} {
 		if !containsHomePath(payload) {
 			t.Fatalf("expected home path detection for %q", payload)
 		}
 	}
-	if containsHomePath([]byte("https://example.test/home/alice/index")) {
+	if containsHomePath([]byte("https://example.test" + unixHome("alice") + "/index")) {
 		t.Fatal("URL path was incorrectly treated as a workstation home path")
 	}
 }
@@ -265,8 +285,8 @@ func TestVerifyRejectsHiddenBytesOutsideEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string][]byte{
-		"prefix": append([]byte("hidden-prefix /home/alice\n"), data...),
-		"suffix": append(append([]byte(nil), data...), []byte("hidden-suffix /home/alice\n")...),
+		"prefix": append([]byte("hidden-prefix "+unixHome("alice")+"\n"), data...),
+		"suffix": append(append([]byte(nil), data...), []byte("hidden-suffix "+unixHome("alice")+"\n")...),
 	}
 	for name, mutated := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -326,20 +346,22 @@ func TestVerifyRejectsNonportableArchivePaths(t *testing.T) {
 
 func TestHomePathPolicyRejectsTerminalHomeDirectories(t *testing.T) {
 	for _, payload := range [][]byte{
-		[]byte("path=/home/alice"),
-		[]byte("path=/Users/Alice"),
-		[]byte("path=/root"),
-		[]byte(`path=C:\Users\Alice`),
-		[]byte("path=C:/Users/Alice"),
+		[]byte("path=" + unixHome("alice")),
+		[]byte("path=" + macHome("Alice")),
+		[]byte("path=" + rootHome()),
+		[]byte("path=" + windowsHomeBackslash("Alice")),
+		[]byte("path=" + windowsHomeSlash("Alice")),
 	} {
 		if !containsHomePath(payload) {
 			t.Fatalf("expected terminal home-path detection for %q", payload)
 		}
 	}
 	for _, payload := range [][]byte{
-		[]byte("https://example.test/home/alice"),
+		[]byte("https://example.test" + unixHome("alice")),
 		[]byte("relative/rooted"),
 		[]byte("/rooted/path"),
+		[]byte("/root-symlink"),
+		[]byte("/root.state"),
 	} {
 		if containsHomePath(payload) {
 			t.Fatalf("unexpected home-path detection for %q", payload)

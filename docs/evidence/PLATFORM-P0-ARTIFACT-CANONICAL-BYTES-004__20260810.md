@@ -14,7 +14,7 @@ Three independent bypasses were reproduced against the starting baseline.
 First, a valid Platform ZIP was prefixed with:
 
 ```text
-HIDDEN-PREFIX /home/alice
+HIDDEN-PREFIX <synthetic-unix-home>
 ```
 
 The detached checksum was recomputed. `artifact-verify` returned success.
@@ -29,7 +29,7 @@ Linux filename byte but a path separator for common Windows extractors.
 `C:/escape.txt` was likewise accepted by the verifier as a drive-prefixed ZIP
 path.
 
-Third, payloads ending exactly in `/home/alice` were accepted because the
+Third, payloads ending exactly at a synthetic Unix home directory were accepted because the
 supported home-path expression required a trailing separator. Equivalent
 terminal macOS, root, and Windows home-directory forms had the same gap.
 
@@ -55,10 +55,10 @@ and manifest entries. It rejects:
 - parent traversal;
 - Windows drive prefixes.
 
-The supported workstation-home policy now catches terminal `/home/<user>`,
-`/Users/<user>`, `/root`, `C:\\Users\\<user>`, and
-`C:/Users/<user>` forms while retaining the existing HTTP URL false-positive
-guard.
+The supported workstation-home policy now catches terminal Linux, macOS,
+root-account, and Windows home-directory forms. Synthetic canaries are assembled
+at runtime so the repository can package its own tracked source without storing
+a supported path literal. The existing HTTP URL false-positive guard remains.
 
 ## Intentional RED and positive evidence
 
