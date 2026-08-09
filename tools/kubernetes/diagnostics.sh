@@ -36,8 +36,7 @@ capture() {
 }
 
 main() {
-  rm -rf "${DIAGNOSTICS_TARGET}"
-  mkdir -p "${DIAGNOSTICS_TARGET}"
+  reset_state_directory "diagnostics/raw/kubernetes" || return
   "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh" >/dev/null
 
   capture nodes kubectl_command 20s get nodes -o wide

@@ -26,6 +26,7 @@ prepare_fixture() {
     "${target}/.platform/bootstrap"
   cp "${PLATFORM_ROOT}/aqua.yaml" "${target}/aqua.yaml"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
+  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
   cp "${PLATFORM_ROOT}/tools/bootstrap/lock-tools.sh" \
     "${target}/tools/bootstrap/lock-tools.sh"
 }

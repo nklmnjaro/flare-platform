@@ -14,7 +14,7 @@ main() {
   hadolint kubernetes/reference/Dockerfile
   trivy fs --scanners secret --exit-code 1 \
     --skip-dirs .git --skip-dirs .platform --skip-dirs tests/fixtures .
-  mkdir -p "${PLATFORM_STATE_DIR}/kubeconform"
+  ensure_state_directory "kubeconform" || return
   kubeconform -cache "${PLATFORM_STATE_DIR}/kubeconform" \
     -strict -summary kubernetes/reference/*.yaml
   kube-linter lint kubernetes/reference

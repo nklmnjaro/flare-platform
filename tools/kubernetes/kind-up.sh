@@ -56,7 +56,7 @@ main() {
   require_tool docker
   docker_command 20s info >/dev/null
   umask 077
-  mkdir -p "${PLATFORM_STATE_DIR}"
+  ensure_state_directory "" || return
   trap cleanup_failed_creation EXIT
 
   presence="$(cluster_presence)"

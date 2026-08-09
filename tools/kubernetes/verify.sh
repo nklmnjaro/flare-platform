@@ -11,8 +11,7 @@ emergency_teardown() {
 
 main() {
   local status=0
-  rm -rf "${PLATFORM_DIAGNOSTICS_DIR}"
-  mkdir -p "${PLATFORM_DIAGNOSTICS_DIR}"
+  reset_state_directory "diagnostics/raw" || return
   trap emergency_teardown EXIT
 
   "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh" || status=1

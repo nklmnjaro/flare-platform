@@ -27,17 +27,14 @@ docker_command() {
 
 prepare_kubeconfig_output() {
   local expected="${PLATFORM_STATE_DIR}/kubeconfig"
+  local prepared
   if [[ "${KUBECONFIG}" != "${expected}" ]]; then
     printf 'FAIL  kube-guard    unexpected kubeconfig output: %s\n' "${KUBECONFIG}" >&2
     return 1
   fi
-  if [[ -L "${PLATFORM_STATE_DIR}" ]]; then
-    printf 'FAIL  kube-guard    project state directory must not be a symlink\n' >&2
-    return 1
-  fi
-  mkdir -p "${PLATFORM_STATE_DIR}"
-  if [[ -L "${KUBECONFIG}" || (-e "${KUBECONFIG}" && ! -f "${KUBECONFIG}") ]]; then
-    printf 'FAIL  kube-guard    refusing unsafe kubeconfig output path\n' >&2
+  prepared="$(prepare_state_file kubeconfig)" || return
+  if [[ "${prepared}" != "${expected}" ]]; then
+    printf 'FAIL  kube-guard    state helper returned unexpected kubeconfig path\n' >&2
     return 1
   fi
   rm -f "${KUBECONFIG}"

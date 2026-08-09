@@ -12,7 +12,7 @@ instead of reimplementing them.
 ## Current scope
 
 - Linux amd64 developer/CI bootstrap.
-- Project-local tool state under `.platform/`.
+- Project-local tool state under a guarded, non-symlink `.platform/` directory.
 - GitHub-first CI with immutable action references and least-privilege permissions.
 - Disposable `kind` cluster with an isolated project kubeconfig.
 - Deterministic reference workload built locally as `FROM scratch` and loaded into `kind`.
@@ -39,7 +39,8 @@ make verify
 
 `make bootstrap` needs outbound HTTPS for first-time tool acquisition. CI refuses an unlocked Aqua
 configuration. `make verify` additionally needs a working Docker daemon. Tool and runtime state is kept
-under `.platform/` and is safe to delete. Use `make diagnose` for a bounded deterministic evidence ZIP.
+under `.platform/`; writers reject symlinked directory and file targets before mutation. Use `make diagnose`
+for a bounded deterministic evidence ZIP.
 
 ## Local Kubernetes
 

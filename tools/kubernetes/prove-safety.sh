@@ -11,6 +11,7 @@ copy_runtime_files() {
   mkdir -p "${target}/tools/common" "${target}/tools/kubernetes" \
     "${target}/.platform/aqua/bin"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
+  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
   cp "${PLATFORM_ROOT}/tools/common/tooling.sh" "${target}/tools/common/tooling.sh"
   for script in runtime guard-context guard-ownership kind-up kind-down delete-namespace diagnostics; do
     cp "${PLATFORM_ROOT}/tools/kubernetes/${script}.sh" \

@@ -6,10 +6,11 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 main() {
-  local output="${PLATFORM_STATE_DIR}/reference/server"
+  local output
   local binary_sha
   require_tool go
   require_tool docker
+  output="$(prepare_state_file "reference/server")" || return
 
   mkdir -p "$(dirname -- "${output}")"
   rm -f "${output}"

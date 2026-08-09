@@ -38,10 +38,12 @@ apply_reference() {
 
 probe() {
   local attempt
+  local port_forward_log
+  port_forward_log="$(prepare_state_file "port-forward.log")" || return
   timeout --signal=TERM --kill-after=5s 35s kubectl \
     --request-timeout=0 port-forward \
     -n "${PLATFORM_NAMESPACE}" service/platform-reference 18080:8080 \
-    >"${PLATFORM_STATE_DIR}/port-forward.log" 2>&1 &
+    >"${port_forward_log}" 2>&1 &
   PORT_FORWARD_PID=$!
 
   for ((attempt = 1; attempt <= 20; attempt++)); do

@@ -28,6 +28,11 @@ make kind-down
 marker. Do not bypass this guard by invoking raw deletion commands unless an
 operator has independently proved ownership.
 
+The runtime also refuses symlinked `.platform` components, kubeconfig outputs,
+reference binaries, port-forward logs, and diagnostic reset targets. A guard
+failure is not evidence that the cluster is absent; restore a real local state
+path and let the ownership checks determine whether deletion is allowed.
+
 ## Failure evidence
 
 ```bash

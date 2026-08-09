@@ -7,8 +7,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 prove_commit_policy() {
   local directory="${PLATFORM_STATE_DIR}/commit-policy"
   local message
-  rm -rf "${directory}"
-  mkdir -p "${directory}"
+  reset_state_directory "commit-policy" || return
 
   printf 'feat(platform): add context guard\n' >"${directory}/valid-title.txt"
   printf 'fix: reject unsafe context\n\nExplain the bounded fix.\n' >"${directory}/valid-body.txt"
@@ -49,6 +48,7 @@ prove_commit_policy() {
 
 prove_local_gates() {
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
+  "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
   expect_failure source-line-policy bash -c \
     'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-line.sh'
   expect_failure source-function-policy bash -c \

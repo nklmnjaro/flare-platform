@@ -6,7 +6,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 
 prove_home_path_rejection() {
   local fixture log output status
-  mkdir -p "${PLATFORM_STATE_DIR}"
+  ensure_state_directory "" || return
   fixture="$(mktemp -d "${PLATFORM_STATE_DIR}/artifact-home-path.XXXXXX")"
   log="$(mktemp "${PLATFORM_STATE_DIR}/artifact-home-path.XXXXXX.log")"
   output="${PLATFORM_STATE_DIR}/artifact-home-path-red.zip"

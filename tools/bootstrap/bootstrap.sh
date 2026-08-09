@@ -24,8 +24,16 @@ enforce_ci_checksum_policy() {
 }
 
 install_aqua() {
-  local archive="${AQUA_BOOTSTRAP_DIR}/${AQUA_ARCHIVE}"
-  mkdir -p "${AQUA_BOOTSTRAP_DIR}" "${AQUA_ROOT_DIR}"
+  local archive
+  local aqua_bin
+  ensure_state_directory "bootstrap" || return
+  ensure_state_directory "aqua" || return
+  archive="$(prepare_state_file "bootstrap/${AQUA_ARCHIVE}")" || return
+  aqua_bin="$(prepare_state_file "bootstrap/aqua")" || return
+  if [[ "${aqua_bin}" != "${AQUA_BIN}" ]]; then
+    printf 'FAIL  bootstrap     state helper returned unexpected Aqua path\n' >&2
+    return 1
+  fi
 
   if [[ -x "${AQUA_BIN}" ]] && [[ "$("${AQUA_BIN}" version)" == *"${AQUA_VERSION}"* ]]; then
     return 0

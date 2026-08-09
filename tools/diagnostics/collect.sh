@@ -35,6 +35,8 @@ write_tool_inventory() {
 
 write_summary() {
   local dirty_count
+  local target
+  target="$(prepare_state_file "diagnostics/raw/platform.txt")" || return
   dirty_count="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 | wc -l | tr -d ' ')"
   {
     printf 'schema=flare-platform-diagnostics-v1\n'
@@ -44,12 +46,14 @@ write_summary() {
     printf 'os=%s\n' "$(uname -s)"
     printf 'arch=%s\n' "$(uname -m)"
     write_tool_inventory
-  } >"${PLATFORM_DIAGNOSTICS_DIR}/platform.txt"
+  } >"${target}"
 }
 
 write_cluster_status() {
   local message="$1"
-  printf '%s\n' "${message}" >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes-status.txt"
+  local target
+  target="$(prepare_state_file "diagnostics/raw/kubernetes-status.txt")" || return
+  printf '%s\n' "${message}" >"${target}"
 }
 
 collect_cluster_diagnostics() {
@@ -78,11 +82,13 @@ collect_cluster_diagnostics() {
 }
 
 package_diagnostics() {
-  local archive="${PLATFORM_STATE_DIR}/platform-diagnostics.zip"
+  local archive
   if ! command -v go >/dev/null 2>&1; then
     printf 'WARN  diagnose      Go missing; raw diagnostics kept below .platform/diagnostics\n' >&2
     return 0
   fi
+  archive="$(prepare_state_file "platform-diagnostics.zip")" || return
+  prepare_state_file "platform-diagnostics.zip.sha256" >/dev/null || return
   rm -f "${archive}" "${archive}.sha256"
   (
     cd "${PLATFORM_ROOT}/tools/artifacts/archive"
@@ -92,7 +98,7 @@ package_diagnostics() {
 }
 
 main() {
-  mkdir -p "${PLATFORM_DIAGNOSTICS_DIR}"
+  ensure_state_directory "diagnostics/raw" || return
   write_summary
   collect_cluster_diagnostics
   package_diagnostics

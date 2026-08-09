@@ -43,6 +43,8 @@ set_require_checksum() {
 }
 
 main() {
+  ensure_state_directory "" || return
+  prepare_state_file "bootstrap/aqua" >/dev/null || return
   if [[ ! -x "${AQUA_BIN}" ]]; then
     printf 'FAIL  tool-lock     Aqua is not bootstrapped; run make bootstrap first.\n' >&2
     return 2

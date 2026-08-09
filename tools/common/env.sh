@@ -10,6 +10,11 @@ export KUBECONFIG="${PLATFORM_STATE_DIR}/kubeconfig"
 export PLATFORM_DIAGNOSTICS_DIR="${PLATFORM_STATE_DIR}/diagnostics/raw"
 export TRIVY_CACHE_DIR="${PLATFORM_STATE_DIR}/trivy"
 export TRIVY_NO_PROGRESS=true
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
+assert_existing_state_directory "aqua/bin" || {
+  return 1 2>/dev/null || exit 1
+}
 export PATH="${AQUA_ROOT_DIR}/bin:${PATH}"
 
 PLATFORM_CLUSTER_NAME="flare-platform-dev"

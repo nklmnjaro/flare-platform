@@ -37,7 +37,24 @@ This runs static/security checks, proves intentional RED fixtures, creates a dis
 runs positive and negative workloads, captures bounded diagnostics for the negative path, and tears the
 cluster down.
 
-Generated state is under `.platform/`. Remove it with `make clean`.
+Generated state is under `.platform/`. The root, Aqua executable-directory chain, and every path used
+for a write or reset must be real directories or regular files, not symlinks. Remove ordinary generated
+state with `make clean`.
+
+If a command reports `FAIL  state-guard`, inspect the path before changing it:
+
+```bash
+ls -ld .platform .platform/aqua .platform/aqua/bin 2>/dev/null || true
+find .platform -maxdepth 4 -type l -print 2>/dev/null || true
+```
+
+Do not run `rm -rf` on a path that may resolve outside the repository. After confirming a reported entry
+is only a generated-state symlink, unlink the symlink itself and rerun the canonical command. If a kind
+cluster may still exist, preserve the failure evidence and use `make kind-down` after restoring a real
+project-local state directory.
+
+The guard prevents accidental and same-user symlink path escape. It is not a sandbox against a hostile
+concurrent local user, bind mounts, or a compromised executable already trusted by the repository.
 
 ## Failure evidence
 
