@@ -128,7 +128,7 @@ func readNamedEntry(t *testing.T, archive, name string) []byte {
 	defer reader.Close()
 	for _, file := range reader.File {
 		if file.Name == name {
-			data, readErr := readZipFile(file)
+			data, readErr := readZipFileBounded(file, defaultMaxManifestBytes)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
@@ -147,7 +147,7 @@ func rewriteEntry(archive, target string, replacement []byte) error {
 	defer reader.Close()
 	var entries []archiveEntry
 	for _, file := range reader.File {
-		data, readErr := readZipFile(file)
+		data, readErr := readZipFileBounded(file, defaultMaxManifestBytes)
 		if readErr != nil {
 			return readErr
 		}
@@ -156,5 +156,18 @@ func rewriteEntry(archive, target string, replacement []byte) error {
 		}
 		entries = append(entries, archiveEntry{name: file.Name, data: data, mode: file.Mode()})
 	}
-	return writeArchive(archive, entries)
+	return writeRawArchive(archive, entries)
+}
+
+func writeRawArchive(path string, entries []archiveEntry) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	writeErr := writeZip(file, entries)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }

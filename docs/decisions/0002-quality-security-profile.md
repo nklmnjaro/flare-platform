@@ -29,7 +29,7 @@ has been promoted into an organization-wide policy.
 | Kubernetes policy | KubeLinter | dangerous workload settings | workload security policy | privileged pod | medium | medium | check | ADVISORY |
 | context identity | repository guard | mutation of unrelated cluster | exact local identity | unrelated context | low | low | prove-local/runtime | BLOCKING |
 | lifecycle safety | repository fixture | unsafe delete/cleanup false green | ownership and absence proof | unowned/API failure | low | low | prove-local/runtime | BLOCKING |
-| artifact integrity | repository helper | stale/tampered handoff | deterministic manifest boundary | tamper/home path | low | low | prove-local | BLOCKING |
+| artifact integrity | repository helper | tamper, path escape, leak, resource exhaustion | canonical bounded archive boundary | tamper/symlink/binary path/compression/limits | low | low | prove-local | BLOCKING |
 | tool checksum admission | bootstrap guard | unchecked CI tool install | fail-closed CI admission | unlocked Aqua config | low | low | bootstrap/prove-local | BLOCKING |
 
 The external tools remain `ADVISORY` in governance terms until an online Linux

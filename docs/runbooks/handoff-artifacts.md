@@ -2,28 +2,68 @@
 
 Platform review material is staged in a directory and packaged through one
 repository-owned command. The source directory must already contain the final
-report, changed files, and deletion metadata that the reviewer needs.
+report, changed files, deletion metadata, and nested input archives that the
+reviewer needs.
 
 ```bash
 make artifact-pack SOURCE=/path/to/stage OUTPUT=/path/to/handoff.zip
 make artifact-verify ARCHIVE=/path/to/handoff.zip
-(
-  cd /path/to
-  sha256sum -c handoff.zip.sha256
-)
 ```
+
+`artifact-pack` creates both `handoff.zip` and `handoff.zip.sha256`.
+`artifact-verify` checks the internal manifest and the detached checksum.
+
+## Publication contract
 
 The packer:
 
+- resolves the real source and output-parent boundaries before publication;
+- rejects a source-directory symlink, nested symlinks, and special files;
+- refuses symlink output and detached-checksum targets;
+- uses unpredictable same-directory temporary files and atomic rename;
 - sorts paths and uses fixed ZIP timestamps;
+- stores entries without compression so verification cannot inflate a zip bomb;
 - normalizes regular and executable modes to `0644` and `0755`;
-- writes no owner, group, username, or absolute source path metadata;
-- rejects symlinks and textual workstation home paths;
+- writes no owner, group, username, or absolute source-path metadata;
+- scans textual and binary payload bytes for supported workstation home paths;
 - computes `MANIFEST.sha256` only after source content is final;
-- excludes both the manifest itself and the output archive from that manifest;
-- verifies the archive before publication;
-- writes a detached `<archive>.sha256` after archive creation.
+- excludes the manifest itself and the outer output archive from that manifest;
+- allows deliberately nested ZIP inputs when a self-contained handoff needs them;
+- verifies the unpublished temporary archive before replacing the target;
+- writes and re-verifies the detached checksum after archive publication.
+
+The verifier requires the same canonical entry order, storage method, modes,
+timestamps, path rules, manifest format, and resource limits as the packer.
+
+## Deliberate resource limits
+
+This command packages compact review material, not container images or data
+backups. The current hard limits are:
+
+| Boundary | Limit |
+| --- | ---: |
+| files | 4096 |
+| path length | 1024 bytes |
+| one payload file | 64 MiB |
+| combined payload | 128 MiB |
+| manifest | 8 MiB |
+| outer ZIP | 152 MiB |
+
+Exceeding a limit is a failed handoff, not a reason to weaken the guard. Remove
+unnecessary generated material or establish a separate approved artifact
+contract for genuinely large evidence.
+
+## Negative proof
+
+`make prove-integrity` covers:
+
+- content tampering and stale detached checksums;
+- textual and binary workstation-path leakage;
+- source and publication symlink boundaries;
+- the historical predictable-temporary-file clobber path;
+- compressed/noncanonical ZIP rejection;
+- per-entry, total-payload, entry-count, and outer-file limits;
+- output boundary resolution through a symlinked parent.
 
 The staging directory is disposable. Never edit an archive after packaging.
-Recreate it from final staged content instead. `make prove-integrity` executes
-negative mutation tests for checksum mismatch and workstation-path leakage.
+Recreate it from final staged content instead.

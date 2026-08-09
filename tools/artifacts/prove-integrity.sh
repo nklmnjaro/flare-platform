@@ -36,17 +36,17 @@ prove_home_path_rejection() {
     return 1
   fi
   rm -f "${log}"
-  printf 'PASS  artifact-red  workstation home path rejected\n'
+  printf 'PASS  artifact-red  workstation home path rejected at CLI boundary\n'
 }
 
 main() {
   require_tool go
   (
     cd "${PLATFORM_ROOT}/tools/artifacts/archive"
-    go test -run 'TestVerifyRejectsTamperedContent|TestDetachedChecksumRejectsArchiveMutation' -v ./...
+    go test -count=1 -v ./...
   )
   prove_home_path_rejection
-  printf 'PASS  artifact-red  integrity mutations rejected\n'
+  printf 'PASS  artifact-red  integrity, path, metadata, and resource bounds proved\n'
 }
 
 main "$@"
