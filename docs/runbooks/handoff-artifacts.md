@@ -33,6 +33,7 @@ The packer:
 - allows deliberately nested ZIP inputs when a self-contained handoff needs them;
 - verifies the unpublished temporary archive before replacing the target;
 - writes and re-verifies the detached checksum after archive publication.
+- emits path-free success evidence and redacts supported home prefixes from errors.
 
 The verifier requires the same canonical entry order, storage method, modes,
 timestamps, path rules, manifest format, and resource limits as the packer. It

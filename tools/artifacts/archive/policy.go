@@ -52,6 +52,10 @@ func containsHomePath(data []byte) bool {
 	return homePath.Find(data) != nil
 }
 
+func redactDiagnosticHomePaths(value string) string {
+	return homePath.ReplaceAllString(value, `${1}<home>${4}`)
+}
+
 func normalizedMode(mode fs.FileMode) fs.FileMode {
 	if mode&0o111 != 0 {
 		return 0o755
