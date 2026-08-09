@@ -13,6 +13,7 @@ prove_commit_policy() {
 
 main() {
   local tool
+  "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   for tool in shellcheck actionlint zizmor hadolint trivy kubeconform kube-linter go; do
     require_tool "${tool}"
   done

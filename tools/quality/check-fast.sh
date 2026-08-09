@@ -8,10 +8,19 @@ collect_shell_files() {
   git ls-files '*.sh' | grep -v '^tests/fixtures/' || true
 }
 
+check_go_tools() {
+  local module
+  for module in tools/artifacts/archive tools/quality/policycheck; do
+    (
+      cd "${PLATFORM_ROOT}/${module}"
+      go test ./...
+    )
+  done
+}
+
 check_source_policy() {
   (
     cd "${PLATFORM_ROOT}/tools/quality/policycheck"
-    go test ./...
     go run . -root "${PLATFORM_ROOT}"
   )
 }
@@ -33,6 +42,7 @@ main() {
   done
 
   "${PLATFORM_ROOT}/tools/quality/repo-policy.sh"
+  check_go_tools
   check_source_policy
   mapfile -t shell_files < <(collect_shell_files)
   if ((${#shell_files[@]})); then

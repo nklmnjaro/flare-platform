@@ -2,6 +2,7 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 .PHONY: help doctor bootstrap tool-lock hooks check-fast check prove-gates verify
+.PHONY: prove-integrity artifact-pack artifact-verify
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
@@ -13,6 +14,9 @@ help:
 	  'check-fast     cheap local static checks' \
 	  'check          full static and security checks' \
 	  'prove-gates    prove candidate gates fail on RED fixtures' \
+	  'prove-integrity prove handoff integrity fails closed' \
+	  'artifact-pack  create deterministic review artifact' \
+	  'artifact-verify verify review artifact and manifest' \
 	  'verify         full static + disposable kind verification' \
 	  'kind-up        create isolated disposable kind cluster' \
 	  'kind-smoke     build/load/probe reference workload' \
@@ -40,6 +44,20 @@ check:
 
 prove-gates:
 	@tools/quality/prove-gates.sh
+
+prove-integrity:
+	@tools/artifacts/prove-integrity.sh
+
+artifact-pack:
+	@test -n "$(SOURCE)" || { echo 'SOURCE is required' >&2; exit 2; }
+	@test -n "$(OUTPUT)" || { echo 'OUTPUT is required' >&2; exit 2; }
+	@cd tools/artifacts/archive && go run . pack \
+	  --source "$(abspath $(SOURCE))" --output "$(abspath $(OUTPUT))"
+
+artifact-verify:
+	@test -n "$(ARCHIVE)" || { echo 'ARCHIVE is required' >&2; exit 2; }
+	@cd tools/artifacts/archive && go run . verify \
+	  --archive "$(abspath $(ARCHIVE))"
 
 verify: check prove-gates
 	@tools/kubernetes/verify.sh
