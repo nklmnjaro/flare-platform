@@ -21,11 +21,13 @@ The packer:
 - rejects a source-directory symlink, nested symlinks, and special files;
 - refuses symlink output and detached-checksum targets;
 - uses unpredictable same-directory temporary files and atomic rename;
+- accepts only portable forward-slash paths without control bytes or drive prefixes;
 - sorts paths and uses fixed ZIP timestamps;
 - stores entries without compression so verification cannot inflate a zip bomb;
 - normalizes regular and executable modes to `0644` and `0755`;
 - writes no owner, group, username, or absolute source-path metadata;
-- scans textual and binary payload bytes for supported workstation home paths;
+- scans textual and binary payload bytes for supported workstation home paths,
+  including terminal home-directory forms without a trailing separator;
 - computes `MANIFEST.sha256` only after source content is final;
 - excludes the manifest itself and the outer output archive from that manifest;
 - allows deliberately nested ZIP inputs when a self-contained handoff needs them;
@@ -33,7 +35,10 @@ The packer:
 - writes and re-verifies the detached checksum after archive publication.
 
 The verifier requires the same canonical entry order, storage method, modes,
-timestamps, path rules, manifest format, and resource limits as the packer.
+timestamps, path rules, manifest format, and resource limits as the packer. It
+reconstructs the normalized ZIP into a streaming exact comparator and checks
+the entire byte stream, rejecting hidden prefixes, suffixes, gaps, or alternate
+ZIP encodings that are not represented by `MANIFEST.sha256`.
 
 ## Deliberate resource limits
 
@@ -61,9 +66,19 @@ contract for genuinely large evidence.
 - textual and binary workstation-path leakage;
 - source and publication symlink boundaries;
 - the historical predictable-temporary-file clobber path;
-- compressed/noncanonical ZIP rejection;
+- compressed/noncanonical ZIP rejection and hidden prefix/suffix bytes;
+- backslash and Windows drive-prefixed archive paths;
+- terminal Unix, macOS, root, and Windows home-directory forms;
 - per-entry, total-payload, entry-count, and outer-file limits;
 - output boundary resolution through a symlinked parent.
 
 The staging directory is disposable. Never edit an archive after packaging.
 Recreate it from final staged content instead.
+
+## Nested archive boundary
+
+A deliberately nested ZIP is an opaque payload at this boundary. Its bytes and
+outer filename are hashed and bounded, but its internal compressed content is
+not recursively treated as another Platform handoff. Verify Platform-produced
+nested handoffs separately before staging them. Do not use this helper as a
+generic malware scanner or secret-management system.

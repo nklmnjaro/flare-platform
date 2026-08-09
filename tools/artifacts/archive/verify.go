@@ -11,9 +11,14 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 )
+
+type archiveReadResult struct {
+	files    map[string][]byte
+	manifest []byte
+	entries  []archiveEntry
+}
 
 func verifyArchive(path string) error {
 	return verifyArchiveWithLimits(path, defaultLimits)
@@ -41,35 +46,41 @@ func verifyArchiveWithLimits(path string, limits archiveLimits) error {
 	if reader.Comment != "" {
 		return errors.New("archive comment is not allowed")
 	}
-	files, manifest, err := readArchive(reader.File, limits)
+	result, err := readArchive(reader.File, limits)
 	if err != nil {
 		return err
 	}
-	expected, err := parseManifest(manifest, limits)
+	expected, err := parseManifest(result.manifest, limits)
 	if err != nil {
 		return err
 	}
-	return compareManifest(files, expected)
+	if err := compareManifest(result.files, expected); err != nil {
+		return err
+	}
+	return verifyCanonicalEncoding(path, result.entries)
 }
 
-func readArchive(files []*zip.File, limits archiveLimits) (map[string][]byte, []byte, error) {
+func readArchive(files []*zip.File, limits archiveLimits) (archiveReadResult, error) {
 	if len(files) > limits.maxEntries+1 {
-		return nil, nil, fmt.Errorf("archive entry count exceeds %d", limits.maxEntries)
+		return archiveReadResult{}, fmt.Errorf("archive entry count exceeds %d", limits.maxEntries)
 	}
-	contents := make(map[string][]byte, len(files))
-	var manifest []byte
+	result := archiveReadResult{
+		files:   make(map[string][]byte, len(files)),
+		entries: make([]archiveEntry, 0, len(files)),
+	}
 	var payloadBytes int64
 	previousName := ""
 	for _, file := range files {
 		if err := validateZipHeader(file, limits.maxPathBytes); err != nil {
-			return nil, nil, err
+			return archiveReadResult{}, err
 		}
 		if previousName != "" && file.Name <= previousName {
-			return nil, nil, fmt.Errorf("archive entries are not strictly sorted: %s", file.Name)
+			return archiveReadResult{}, fmt.Errorf("archive entries are not strictly sorted: %s", file.Name)
 		}
 		previousName = file.Name
-		if _, exists := contents[file.Name]; exists || (file.Name == manifestName && manifest != nil) {
-			return nil, nil, fmt.Errorf("duplicate archive path %s", file.Name)
+		if _, exists := result.files[file.Name]; exists ||
+			(file.Name == manifestName && result.manifest != nil) {
+			return archiveReadResult{}, fmt.Errorf("duplicate archive path %s", file.Name)
 		}
 		limit := limits.maxEntryBytes
 		if file.Name == manifestName {
@@ -77,32 +88,35 @@ func readArchive(files []*zip.File, limits archiveLimits) (map[string][]byte, []
 		}
 		data, err := readZipFileBounded(file, limit)
 		if err != nil {
-			return nil, nil, err
+			return archiveReadResult{}, err
 		}
+		result.entries = append(result.entries, archiveEntry{
+			name: file.Name,
+			data: data,
+			mode: file.Mode().Perm(),
+		})
 		if file.Name == manifestName {
-			manifest = data
+			result.manifest = data
 			continue
 		}
 		if int64(len(data)) > limits.maxPayloadBytes-payloadBytes {
-			return nil, nil, fmt.Errorf("archive payload exceeds %d bytes", limits.maxPayloadBytes)
+			return archiveReadResult{}, fmt.Errorf("archive payload exceeds %d bytes", limits.maxPayloadBytes)
 		}
 		if containsHomePath(data) {
-			return nil, nil, fmt.Errorf("absolute workstation home path detected in %s", file.Name)
+			return archiveReadResult{}, fmt.Errorf("absolute workstation home path detected in %s", file.Name)
 		}
 		payloadBytes += int64(len(data))
-		contents[file.Name] = data
+		result.files[file.Name] = data
 	}
-	if manifest == nil {
-		return nil, nil, errors.New("archive manifest is missing")
+	if result.manifest == nil {
+		return archiveReadResult{}, errors.New("archive manifest is missing")
 	}
-	return contents, manifest, nil
+	return result, nil
 }
 
 func validateZipHeader(file *zip.File, maxPathBytes int) error {
-	clean := filepath.ToSlash(filepath.Clean(file.Name))
-	if file.Name == "" || len(file.Name) > maxPathBytes || strings.ContainsAny(file.Name, "\r\n") ||
-		strings.HasPrefix(file.Name, "/") || clean != file.Name || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("unsafe archive path %q", file.Name)
+	if err := validateArchivePath(file.Name, maxPathBytes); err != nil {
+		return err
 	}
 	if file.FileInfo().IsDir() || !file.Mode().IsRegular() || file.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("unsupported archive entry %s", file.Name)
@@ -184,12 +198,7 @@ func validDigest(value string) bool {
 }
 
 func validateManifestPath(name string, maxPathBytes int) error {
-	clean := filepath.ToSlash(filepath.Clean(name))
-	if name == "" || len(name) > maxPathBytes || strings.ContainsAny(name, "\r\n") ||
-		strings.HasPrefix(name, "/") || clean != name || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("unsafe manifest path %q", name)
-	}
-	return nil
+	return validateArchivePath(name, maxPathBytes)
 }
 
 func compareManifest(files map[string][]byte, expected map[string]string) error {

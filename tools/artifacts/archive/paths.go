@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -129,4 +130,32 @@ func validateVerificationInput(path string) error {
 		return fmt.Errorf("verification input is not a regular file: %s", path)
 	}
 	return nil
+}
+
+func validateArchivePath(name string, maxPathBytes int) error {
+	clean := path.Clean(name)
+	if name == "" || len(name) > maxPathBytes || containsControlByte(name) ||
+		strings.Contains(name, `\`) || strings.HasPrefix(name, "/") ||
+		clean != name || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") ||
+		hasWindowsDrivePrefix(name) {
+		return fmt.Errorf("unsafe archive path %q", name)
+	}
+	return nil
+}
+
+func containsControlByte(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWindowsDrivePrefix(value string) bool {
+	if len(value) < 2 || value[1] != ':' {
+		return false
+	}
+	letter := value[0]
+	return letter >= 'A' && letter <= 'Z' || letter >= 'a' && letter <= 'z'
 }

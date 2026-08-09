@@ -122,11 +122,8 @@ func archiveEntryName(root, path string, maxPathBytes int) (string, error) {
 		return "", err
 	}
 	name := filepath.ToSlash(relative)
-	if strings.ContainsAny(name, "\r\n") {
-		return "", fmt.Errorf("archive path contains a newline: %q", name)
-	}
-	if len(name) > maxPathBytes {
-		return "", fmt.Errorf("archive path exceeds %d bytes: %q", maxPathBytes, name)
+	if err := validateArchivePath(name, maxPathBytes); err != nil {
+		return "", err
 	}
 	if name == manifestName {
 		return "", fmt.Errorf("source must not contain reserved file %s", manifestName)

@@ -253,3 +253,96 @@ func writeCompressedArchive(path string, files map[string][]byte) error {
 	}
 	return file.Close()
 }
+
+func TestVerifyRejectsHiddenBytesOutsideEntries(t *testing.T) {
+	source := fixtureDirectory(t, map[string]string{"payload.txt": "safe\n"})
+	original := filepath.Join(t.TempDir(), "original.zip")
+	if err := packDirectory(source, original); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string][]byte{
+		"prefix": append([]byte("hidden-prefix /home/alice\n"), data...),
+		"suffix": append(append([]byte(nil), data...), []byte("hidden-suffix /home/alice\n")...),
+	}
+	for name, mutated := range cases {
+		t.Run(name, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), name+".zip")
+			if err := os.WriteFile(archive, mutated, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyArchive(archive)
+			if err == nil || !strings.Contains(err.Error(), "byte encoding is not canonical") {
+				t.Fatalf("expected hidden-byte rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPackRejectsNonportableSourcePaths(t *testing.T) {
+	cases := map[string]func(string) error{
+		"backslash": func(source string) error {
+			return os.WriteFile(filepath.Join(source, `..\escape.txt`), []byte("unsafe\n"), 0o644)
+		},
+		"drive-prefix": func(source string) error {
+			if err := os.Mkdir(filepath.Join(source, "C:"), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(source, "C:", "escape.txt"), []byte("unsafe\n"), 0o644)
+		},
+	}
+	for name, prepare := range cases {
+		t.Run(name, func(t *testing.T) {
+			source := t.TempDir()
+			if err := prepare(source); err != nil {
+				t.Fatal(err)
+			}
+			err := packDirectory(source, filepath.Join(t.TempDir(), "artifact.zip"))
+			if err == nil || !strings.Contains(err.Error(), "unsafe archive path") {
+				t.Fatalf("expected portable-path rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyRejectsNonportableArchivePaths(t *testing.T) {
+	for _, name := range []string{`..\escape.txt`, "C:/escape.txt", "C:escape.txt", "."} {
+		t.Run(name, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "artifact.zip")
+			entries := entriesWithManifest(map[string][]byte{name: []byte("unsafe\n")})
+			if err := writeRawArchive(archive, entries); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyArchive(archive)
+			if err == nil || !strings.Contains(err.Error(), "unsafe archive path") {
+				t.Fatalf("expected portable-path rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestHomePathPolicyRejectsTerminalHomeDirectories(t *testing.T) {
+	for _, payload := range [][]byte{
+		[]byte("path=/home/alice"),
+		[]byte("path=/Users/Alice"),
+		[]byte("path=/root"),
+		[]byte(`path=C:\Users\Alice`),
+		[]byte("path=C:/Users/Alice"),
+	} {
+		if !containsHomePath(payload) {
+			t.Fatalf("expected terminal home-path detection for %q", payload)
+		}
+	}
+	for _, payload := range [][]byte{
+		[]byte("https://example.test/home/alice"),
+		[]byte("relative/rooted"),
+		[]byte("/rooted/path"),
+	} {
+		if containsHomePath(payload) {
+			t.Fatalf("unexpected home-path detection for %q", payload)
+		}
+	}
+}

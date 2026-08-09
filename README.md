@@ -17,7 +17,7 @@ instead of reimplementing them.
 - Disposable `kind` cluster with an isolated project kubeconfig.
 - Deterministic reference workload built locally as `FROM scratch` and loaded into `kind`.
 - Static infrastructure/security checks with intentional RED fixtures.
-- Deterministic, checksum-verifiable review artifacts with explicit resource and path-safety bounds.
+- Deterministic review artifacts with checksum, canonical-byte, resource, and portable-path bounds.
 - Integration contracts for Flare and Poker without cross-repository writes.
 
 Remote infrastructure, production Kubernetes, GitOps, cloud provisioning, and Poker-specific runtime

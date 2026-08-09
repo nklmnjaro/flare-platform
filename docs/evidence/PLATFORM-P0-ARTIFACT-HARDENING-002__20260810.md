@@ -80,3 +80,11 @@ Executed locally:
 
 External scanners and live Docker/kind verification are intentionally unchanged
 and remain owned by `PLATFORM-PROMOTION-ONLINE-001`.
+
+## Follow-up
+
+The canonical entry-level repair was subsequently extended by
+`PLATFORM-P0-ARTIFACT-CANONICAL-BYTES-004` after independent review found
+accepted bytes outside ZIP entries and nonportable path forms. Evidence 004 is
+part of the current artifact boundary and does not invalidate the defects or
+checks recorded here.

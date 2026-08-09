@@ -36,7 +36,8 @@ var defaultLimits = archiveLimits{
 }
 
 var homePath = regexp.MustCompile(
-	`(?i)(^|[^[:alnum:]_])(/(home|users|root)/[^/\x00[:space:]]+/|[a-z]:\\users\\[^\\\x00[:space:]]+\\)`,
+	`(?i)(^|[^[:alnum:]_])(/(home|users)/[^/\x00[:space:]]+|/root([^[:alnum:]_]|$)|` +
+		`[a-z]:[\\/]+users[\\/]+[^\\/\x00[:space:]]+)`,
 )
 
 func (limits archiveLimits) validate() error {
