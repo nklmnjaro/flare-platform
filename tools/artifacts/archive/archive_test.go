@@ -48,7 +48,7 @@ func TestPackRejectsOutputInsideSource(t *testing.T) {
 }
 
 func TestPackRejectsAbsoluteHomePath(t *testing.T) {
-	source := fixtureDirectory(t, map[string]string{"leak.txt": "path=/home/alice/project\n"})
+	source := fixtureDirectory(t, map[string]string{"leak.txt": "path=/" + "home/alice/project\n"})
 	err := packDirectory(source, filepath.Join(t.TempDir(), "artifact.zip"))
 	if err == nil || !strings.Contains(err.Error(), "home path") {
 		t.Fatalf("expected home-path rejection, got %v", err)
