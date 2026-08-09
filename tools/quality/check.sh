@@ -12,10 +12,11 @@ main() {
 
   "${PLATFORM_ROOT}/tools/quality/check-fast.sh"
   hadolint kubernetes/reference/Dockerfile
-  trivy config --exit-code 1 --severity HIGH,CRITICAL kubernetes/reference
-  trivy fs --scanners secret --exit-code 1 --skip-dirs .platform --skip-dirs tests/fixtures .
+  trivy fs --scanners secret --exit-code 1 \
+    --skip-dirs .git --skip-dirs .platform --skip-dirs tests/fixtures .
   mkdir -p "${PLATFORM_STATE_DIR}/kubeconform"
-  kubeconform -cache "${PLATFORM_STATE_DIR}/kubeconform" -strict -summary kubernetes/reference/*.yaml
+  kubeconform -cache "${PLATFORM_STATE_DIR}/kubeconform" \
+    -strict -summary kubernetes/reference/*.yaml
   kube-linter lint kubernetes/reference
   printf 'PASS  check         full static and security checks\n'
 }

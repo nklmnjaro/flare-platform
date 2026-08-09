@@ -10,6 +10,19 @@ AQUA_URL="https://github.com/aquaproj/aqua/releases/download/v${AQUA_VERSION}/${
 AQUA_BOOTSTRAP_DIR="${PLATFORM_STATE_DIR}/bootstrap"
 AQUA_BIN="${AQUA_BOOTSTRAP_DIR}/aqua"
 
+require_checksum_enabled() {
+  grep -Fqx '  require_checksum: true' "${AQUA_CONFIG}"
+}
+
+enforce_ci_checksum_policy() {
+  if [[ "${CI:-}" != "true" ]] || require_checksum_enabled; then
+    return 0
+  fi
+  printf 'FAIL  bootstrap     CI requires committed Aqua checksums.\n' >&2
+  printf '      Run make tool-lock on a trusted online host and commit both lock files.\n' >&2
+  return 1
+}
+
 install_aqua() {
   local archive="${AQUA_BOOTSTRAP_DIR}/${AQUA_ARCHIVE}"
   mkdir -p "${AQUA_BOOTSTRAP_DIR}" "${AQUA_ROOT_DIR}"
@@ -28,6 +41,7 @@ install_aqua() {
 
 main() {
   "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only
+  enforce_ci_checksum_policy
   install_aqua
   (cd "${PLATFORM_ROOT}" && "${AQUA_BIN}" install)
   printf 'PASS  bootstrap     pinned tools installed under %s\n' "${AQUA_ROOT_DIR}"

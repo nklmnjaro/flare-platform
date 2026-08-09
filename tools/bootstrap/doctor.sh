@@ -24,10 +24,18 @@ require_command() {
   return 1
 }
 
+check_docker() {
+  require_command docker || return 1
+  if ! timeout 15s docker info >/dev/null 2>&1; then
+    printf 'FAIL  docker       daemon is not reachable within 15s\n' >&2
+    return 1
+  fi
+}
+
 main() {
   local failed=0
   local command_name
-  local base=(bash git make curl tar gzip sha256sum sed)
+  local base=(awk bash curl cut find git grep gzip head make mktemp sed sha256sum sort tar timeout tr uname wc)
 
   if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
     printf 'FAIL  platform     supported target is Linux x86_64\n' >&2
@@ -38,15 +46,9 @@ main() {
   for command_name in "${base[@]}"; do
     require_command "${command_name}" || failed=1
   done
-
   if [[ "${base_only}" == false ]]; then
-    require_command docker || failed=1
-    if has_command docker && ! docker info >/dev/null 2>&1; then
-      printf 'FAIL  docker       daemon is not reachable\n' >&2
-      failed=1
-    fi
+    check_docker || failed=1
   fi
-
   return "${failed}"
 }
 

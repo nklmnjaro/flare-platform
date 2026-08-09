@@ -10,15 +10,18 @@ Kubernetes verification.
 ```bash
 make doctor
 make bootstrap
+make tool-lock
 make bootstrap
 make hooks
 ```
 
-The second bootstrap is intentional and must succeed without creating divergent state.
+The second bootstrap is intentional and must succeed with committed required checksums.
+`make tool-lock` is needed only when creating or deliberately updating the lock.
 
 ## Fast feedback
 
 ```bash
+make prove-local
 make check-fast
 ```
 
@@ -35,3 +38,13 @@ runs positive and negative workloads, captures bounded diagnostics for the negat
 cluster down.
 
 Generated state is under `.platform/`. Remove it with `make clean`.
+
+## Failure evidence
+
+```bash
+make diagnose
+make artifact-verify ARCHIVE=.platform/platform-diagnostics.zip
+```
+
+The archive contains bounded Platform fixture diagnostics only. It is not a
+generic product log collector.

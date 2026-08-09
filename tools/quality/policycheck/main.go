@@ -10,17 +10,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"unicode/utf8"
 )
 
 const (
 	maxLineLength    = 120
 	maxFunctionLines = 80
+	maxScannedLine   = 1024 * 1024
 )
-
-var shellFunction = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{$`)
 
 func main() {
 	root := flag.String("root", ".", "repository root")
@@ -28,10 +25,10 @@ func main() {
 	flag.Parse()
 
 	var findings []string
-	if *path != "" {
-		findings = checkFile(*path)
-	} else {
+	if *path == "" {
 		findings = checkTree(*root)
+	} else {
+		findings = checkFile(*path)
 	}
 	for _, finding := range findings {
 		fmt.Fprintln(os.Stderr, finding)
@@ -94,14 +91,21 @@ func checkLines(path string) []string {
 
 	var findings []string
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), maxScannedLine)
 	for line := 1; scanner.Scan(); line++ {
 		length := utf8.RuneCountInString(scanner.Text())
 		if length > maxLineLength {
-			findings = append(findings, fmt.Sprintf("%s:%d: line has %d chars; max is %d", path, line, length,
-				maxLineLength))
+			findings = append(findings, lineFinding(path, line, length))
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		findings = append(findings, fmt.Sprintf("%s: scan error: %v", path, err))
+	}
 	return findings
+}
+
+func lineFinding(path string, line, length int) string {
+	return fmt.Sprintf("%s:%d: line has %d chars; max is %d", path, line, length, maxLineLength)
 }
 
 func checkGoFunctions(path string) []string {
@@ -123,29 +127,6 @@ func checkGoFunctions(path string) []string {
 		}
 		return false
 	})
-	return findings
-}
-
-func checkShellFunctions(path string) []string {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return []string{fmt.Sprintf("%s: %v", path, err)}
-	}
-	lines := strings.Split(string(content), "\n")
-	var findings []string
-	for index := 0; index < len(lines); index++ {
-		if !shellFunction.MatchString(strings.TrimSpace(lines[index])) {
-			continue
-		}
-		start := index
-		for index++; index < len(lines) && strings.TrimSpace(lines[index]) != "}"; index++ {
-		}
-		size := index - start + 1
-		if size > maxFunctionLines {
-			name := strings.SplitN(strings.TrimSpace(lines[start]), "(", 2)[0]
-			findings = append(findings, functionFinding(path, name, start+1, size))
-		}
-	}
 	return findings
 }
 

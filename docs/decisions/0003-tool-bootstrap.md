@@ -1,40 +1,46 @@
 # ADR 0003: Project-local tool bootstrap
 
-Status: accepted bootstrap candidate
+Status: implementation complete; checksum lock generation pending online host
 
 ## Decision
 
-Use one pinned Aqua configuration as the source of truth for project CLI versions. Aqua itself is
-bootstrapped as a pinned Linux amd64 release with a hard-coded SHA-256 check before execution.
+Use one pinned Aqua configuration as the source of truth for project CLI
+versions. Aqua itself is bootstrapped as a pinned Linux amd64 archive with a
+hard-coded SHA-256 check before execution.
 
-All Aqua state lives under `.platform/aqua`; no global package-manager changes or `sudo` operations are
-performed. The repository supports Linux x86_64 first.
-
-Host prerequisites are deliberately small:
-
-- Bash;
-- Git;
-- Make;
-- curl;
-- tar/gzip;
-- sha256sum;
-- sed;
-- Docker for container/Kubernetes verification.
-
-The project does not silently install or reconfigure Docker.
+All Aqua state lives under `.platform/aqua`; no global package-manager changes
+or `sudo` operations are performed. The first supported host is Linux amd64.
+The repository never installs or reconfigures Docker.
 
 ## Checksum admission
 
-The bootstrap candidate keeps Aqua checksum verification enabled while `require_checksum` is temporarily
-false only until the initial lock can be generated on an online host. `make tool-lock` generates and prunes
-`aqua-checksums.json`, proves all configured packages install with required checksums, and then switches
-`require_checksum` to true.
+The initial local bootstrap may run with checksum collection enabled while
+`require_checksum` is false. This exception exists only to generate the first
+lock on a trusted online host.
 
-The checksum file and the resulting `aqua.yaml` change must be committed together before this repository is
-promoted from `READY_AFTER_EXTERNAL_STEP` to `READY`.
+CI fails before network access whenever `require_checksum` is not true. The
+promotion sequence is:
+
+```text
+make bootstrap
+make tool-lock
+make bootstrap
+```
+
+`make tool-lock` updates `aqua-checksums.json`, verifies installation with
+required checksums, atomically enables `require_checksum`, and verifies again.
+On failure it restores the prior config and checksum file. Both files must be
+committed together.
+
+## Host prerequisites
+
+`make doctor` verifies the small set of host utilities used by the canonical
+scripts. Docker is additionally required only for runtime verification. Tool
+versions used by static checks and kind are installed project-locally by Aqua.
 
 ## Network contract
 
-First bootstrap requires outbound HTTPS to fetch pinned tools. Static schema/security checks may refresh
-upstream data into `.platform/`. Kubernetes smoke itself does not pull a workload image from an external
-registry: the image is built locally from a static Go binary and a `scratch` base.
+The first bootstrap requires outbound HTTPS to fetch pinned assets. Static
+schema/security tools may populate caches below `.platform/`. The Kubernetes
+smoke image is built locally and loaded directly into kind; it is not pushed to
+or pulled from an external registry.

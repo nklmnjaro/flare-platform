@@ -7,6 +7,9 @@ export PLATFORM_STATE_DIR="${PLATFORM_ROOT}/.platform"
 export AQUA_ROOT_DIR="${PLATFORM_STATE_DIR}/aqua"
 export AQUA_CONFIG="${PLATFORM_ROOT}/aqua.yaml"
 export KUBECONFIG="${PLATFORM_STATE_DIR}/kubeconfig"
+export PLATFORM_DIAGNOSTICS_DIR="${PLATFORM_STATE_DIR}/diagnostics/raw"
+export TRIVY_CACHE_DIR="${PLATFORM_STATE_DIR}/trivy"
+export TRIVY_NO_PROGRESS=true
 export PATH="${AQUA_ROOT_DIR}/bin:${PATH}"
 
 PLATFORM_CLUSTER_NAME="flare-platform-dev"

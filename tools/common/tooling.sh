@@ -19,3 +19,13 @@ expect_failure() {
   fi
   printf 'PASS  red-fixture   %s rejected\n' "${label}"
 }
+
+expect_success() {
+  local label="$1"
+  shift
+  if ! "$@" >/dev/null 2>&1; then
+    printf 'FAIL  green-fixture %s unexpectedly failed\n' "${label}" >&2
+    return 1
+  fi
+  printf 'PASS  green-fixture %s accepted\n' "${label}"
+}

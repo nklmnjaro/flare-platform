@@ -1,8 +1,8 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help doctor bootstrap tool-lock hooks check-fast check prove-gates verify
-.PHONY: prove-integrity artifact-pack artifact-verify
+.PHONY: help doctor bootstrap tool-lock hooks check-fast check prove-local prove-gates verify
+.PHONY: prove-integrity artifact-pack artifact-verify diagnose verify-runtime
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
@@ -13,10 +13,13 @@ help:
 	  'hooks          install pre-commit and commit-msg hooks' \
 	  'check-fast     cheap local static checks' \
 	  'check          full static and security checks' \
-	  'prove-gates    prove candidate gates fail on RED fixtures' \
+	  'prove-local    prove offline-capable RED fixtures' \
+	  'prove-gates    prove all candidate gates fail on RED fixtures' \
 	  'prove-integrity prove handoff integrity fails closed' \
 	  'artifact-pack  create deterministic review artifact' \
 	  'artifact-verify verify review artifact and manifest' \
+	  'diagnose       collect bounded local diagnostics' \
+	  'verify-runtime verify disposable Kubernetes runtime' \
 	  'verify         full static + disposable kind verification' \
 	  'kind-up        create isolated disposable kind cluster' \
 	  'kind-smoke     build/load/probe reference workload' \
@@ -42,6 +45,9 @@ check-fast:
 check:
 	@tools/quality/check.sh
 
+prove-local:
+	@tools/quality/prove-gates.sh --local-only
+
 prove-gates:
 	@tools/quality/prove-gates.sh
 
@@ -59,8 +65,13 @@ artifact-verify:
 	@cd tools/artifacts/archive && go run . verify \
 	  --archive "$(abspath $(ARCHIVE))"
 
-verify: check prove-gates
+verify: check prove-gates verify-runtime
+
+verify-runtime:
 	@tools/kubernetes/verify.sh
+
+diagnose:
+	@tools/diagnostics/collect.sh
 
 kind-up:
 	@tools/kubernetes/kind-up.sh

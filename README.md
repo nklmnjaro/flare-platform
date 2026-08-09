@@ -27,15 +27,18 @@ integration are intentionally out of scope until separately authorized.
 ```bash
 make doctor
 make bootstrap
-make bootstrap       # must remain idempotent
+make tool-lock       # one-time lock generation on a trusted online host
+make bootstrap       # must remain idempotent with required checksums
 make hooks
+make prove-local
 make check-fast
 make check
 make verify
 ```
 
-`make bootstrap` needs outbound HTTPS for first-time tool acquisition. `make verify` additionally needs
-a working Docker daemon. Tool and runtime state is kept under `.platform/` and is safe to delete.
+`make bootstrap` needs outbound HTTPS for first-time tool acquisition. CI refuses an unlocked Aqua
+configuration. `make verify` additionally needs a working Docker daemon. Tool and runtime state is kept
+under `.platform/` and is safe to delete. Use `make diagnose` for a bounded deterministic evidence ZIP.
 
 ## Local Kubernetes
 

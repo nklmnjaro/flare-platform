@@ -5,29 +5,65 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
 
 AQUA_BIN="${PLATFORM_STATE_DIR}/bootstrap/aqua"
 CHECKSUM_FILE="${PLATFORM_ROOT}/aqua-checksums.json"
+LOCK_BACKUP_DIR=""
+LOCK_COMPLETE=false
 
-if [[ ! -x "${AQUA_BIN}" ]]; then
-  printf 'FAIL  tool-lock     Aqua is not bootstrapped; run make bootstrap first.\n' >&2
-  exit 2
-fi
+restore_previous_state() {
+  cp "${LOCK_BACKUP_DIR}/aqua.yaml" "${AQUA_CONFIG}"
+  if [[ -f "${LOCK_BACKUP_DIR}/aqua-checksums.json" ]]; then
+    cp "${LOCK_BACKUP_DIR}/aqua-checksums.json" "${CHECKSUM_FILE}"
+  else
+    rm -f "${CHECKSUM_FILE}"
+  fi
+}
 
-(
-  cd "${PLATFORM_ROOT}"
-  "${AQUA_BIN}" update-checksum -prune
-)
+cleanup_tool_lock() {
+  [[ -z "${LOCK_BACKUP_DIR}" ]] && return 0
+  [[ "${LOCK_COMPLETE}" == true ]] || restore_previous_state
+  rm -rf "${LOCK_BACKUP_DIR}"
+}
 
-if [[ ! -s "${CHECKSUM_FILE}" ]]; then
-  printf 'FAIL  tool-lock     %s was not created.\n' "${CHECKSUM_FILE}" >&2
-  exit 2
-fi
+set_require_checksum() {
+  local temporary
+  local count
+  count="$(grep -Ec '^  require_checksum: (true|false)$' "${AQUA_CONFIG}")"
+  if [[ "${count}" != "1" ]]; then
+    printf 'FAIL  tool-lock     expected one require_checksum setting.\n' >&2
+    return 1
+  fi
+  temporary="$(mktemp "${PLATFORM_ROOT}/.aqua.yaml.XXXXXX")"
+  sed 's/^  require_checksum: false$/  require_checksum: true/' \
+    "${AQUA_CONFIG}" >"${temporary}"
+  grep -Fqx '  require_checksum: true' "${temporary}" || {
+    rm -f "${temporary}"
+    printf 'FAIL  tool-lock     unsupported require_checksum setting.\n' >&2
+    return 1
+  }
+  mv "${temporary}" "${AQUA_CONFIG}"
+}
 
-AQUA_ENFORCE_REQUIRE_CHECKSUM=true "${AQUA_BIN}" install
+main() {
+  if [[ ! -x "${AQUA_BIN}" ]]; then
+    printf 'FAIL  tool-lock     Aqua is not bootstrapped; run make bootstrap first.\n' >&2
+    return 2
+  fi
 
-if grep -Fqx '  require_checksum: false' "${AQUA_CONFIG}"; then
-  sed -i 's/^  require_checksum: false$/  require_checksum: true/' "${AQUA_CONFIG}"
-elif ! grep -Fqx '  require_checksum: true' "${AQUA_CONFIG}"; then
-  printf 'FAIL  tool-lock     Unsupported require_checksum setting in aqua.yaml.\n' >&2
-  exit 2
-fi
+  LOCK_BACKUP_DIR="$(mktemp -d "${PLATFORM_STATE_DIR}/tool-lock.XXXXXX")"
+  cp "${AQUA_CONFIG}" "${LOCK_BACKUP_DIR}/aqua.yaml"
+  [[ ! -f "${CHECKSUM_FILE}" ]] || cp "${CHECKSUM_FILE}" \
+    "${LOCK_BACKUP_DIR}/aqua-checksums.json"
+  trap cleanup_tool_lock EXIT
 
-printf 'PASS  tool-lock     checksums locked and require_checksum enabled.\n'
+  (cd "${PLATFORM_ROOT}" && "${AQUA_BIN}" update-checksum -prune)
+  [[ -s "${CHECKSUM_FILE}" ]] || {
+    printf 'FAIL  tool-lock     aqua-checksums.json was not created.\n' >&2
+    return 2
+  }
+  AQUA_ENFORCE_REQUIRE_CHECKSUM=true "${AQUA_BIN}" install
+  set_require_checksum
+  AQUA_ENFORCE_REQUIRE_CHECKSUM=true "${AQUA_BIN}" install
+  LOCK_COMPLETE=true
+  printf 'PASS  tool-lock     checksums locked and require_checksum enabled.\n'
+}
+
+main "$@"
