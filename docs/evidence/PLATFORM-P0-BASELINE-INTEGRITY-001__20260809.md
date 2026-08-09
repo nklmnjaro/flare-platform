@@ -39,7 +39,11 @@ artifact orchestration framework.
 
 A Platform handoff is invalid unless both commands pass:
 
-```text
-make artifact-verify ARCHIVE=<handoff.zip>
-sha256sum -c <handoff.zip.sha256>
+```bash
+archive=/path/to/handoff.zip
+make artifact-verify ARCHIVE="${archive}"
+(
+  cd "$(dirname -- "${archive}")"
+  sha256sum -c "$(basename -- "${archive}").sha256"
+)
 ```

@@ -43,14 +43,18 @@ under `.platform/` and is safe to delete. Use `make diagnose` for a bounded dete
 ## Local Kubernetes
 
 ```bash
+make verify-runtime
+# or inspect individual boundaries:
 make kind-up
 make kind-smoke
 make kind-negative
 make kind-down
 ```
 
-All Kubernetes commands use `.platform/kubeconfig` and require the exact context
-`kind-flare-platform-dev`. The scripts refuse to mutate any other context.
+All Kubernetes commands use `.platform/kubeconfig`, require the exact context
+`kind-flare-platform-dev`, and prove ownership before reuse or deletion. Runtime
+operations and diagnostics are bounded; unsafe kubeconfig output paths are
+rejected before writes; namespace and cluster absence are explicitly verified. See `docs/runbooks/local-kubernetes.md`.
 
 ## Gate maturity
 

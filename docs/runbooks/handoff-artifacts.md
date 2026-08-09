@@ -7,6 +7,10 @@ report, changed files, and deletion metadata that the reviewer needs.
 ```bash
 make artifact-pack SOURCE=/path/to/stage OUTPUT=/path/to/handoff.zip
 make artifact-verify ARCHIVE=/path/to/handoff.zip
+(
+  cd /path/to
+  sha256sum -c handoff.zip.sha256
+)
 ```
 
 The packer:

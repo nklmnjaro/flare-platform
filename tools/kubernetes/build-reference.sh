@@ -3,25 +3,26 @@ set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 main() {
   local output="${PLATFORM_STATE_DIR}/reference/server"
+  local binary_sha
   require_tool go
-  command -v docker >/dev/null 2>&1 || {
-    printf 'FAIL  image         docker is required\n' >&2
-    return 1
-  }
+  require_tool docker
 
   mkdir -p "$(dirname -- "${output}")"
+  rm -f "${output}"
   (
     cd "${PLATFORM_ROOT}/kubernetes/reference/server"
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-      -trimpath -ldflags='-s -w -buildid=' -o "${output}" .
+    run_bounded 90s env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' -o "${output}" .
   )
-  docker build --network=none \
+  binary_sha="$(sha256sum "${output}" | cut -d ' ' -f 1)"
+  docker_command 120s build --network=none --pull=false \
     --file "${PLATFORM_ROOT}/kubernetes/reference/Dockerfile" \
     --tag "${PLATFORM_IMAGE}" "${PLATFORM_ROOT}"
-  printf 'PASS  image         built %s without build-network access\n' "${PLATFORM_IMAGE}"
+  printf 'PASS  image         %s binary_sha256=%s\n' "${PLATFORM_IMAGE}" "${binary_sha}"
 }
 
 main "$@"

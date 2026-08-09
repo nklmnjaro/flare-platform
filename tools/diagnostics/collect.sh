@@ -2,10 +2,24 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../kubernetes/runtime.sh"
 
 first_line() {
   local tool="$1"
-  "${tool}" --version 2>&1 | head -n 1 | cut -c 1-300 || true
+  case "${tool}" in
+    go)
+      run_bounded 5s go version
+      ;;
+    kind)
+      run_bounded 5s kind version
+      ;;
+    kubectl)
+      run_bounded 5s kubectl version --client=true
+      ;;
+    *)
+      run_bounded 5s "${tool}" --version
+      ;;
+  esac 2>&1 | head -n 1 | cut -c 1-300 || true
 }
 
 write_tool_inventory() {
@@ -33,28 +47,40 @@ write_summary() {
   } >"${PLATFORM_DIAGNOSTICS_DIR}/platform.txt"
 }
 
+write_cluster_status() {
+  local message="$1"
+  printf '%s\n' "${message}" >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes-status.txt"
+}
+
 collect_cluster_diagnostics() {
+  local presence
   if ! command -v kind >/dev/null 2>&1 || ! command -v kubectl >/dev/null 2>&1; then
-    printf 'cluster=not-inspected; kind or kubectl missing\n' \
-      >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes-status.txt"
+    write_cluster_status 'cluster=not-inspected; kind or kubectl missing'
     return 0
   fi
-  if ! kind get clusters 2>/dev/null | grep -Fxq "${PLATFORM_CLUSTER_NAME}"; then
-    printf 'cluster=absent\n' >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes-status.txt"
+  presence="$(cluster_presence)" || {
+    write_cluster_status 'cluster=not-inspected; kind query failed'
+    return 0
+  }
+  if [[ "${presence}" == absent ]]; then
+    write_cluster_status 'cluster=absent; retained current runtime capture when present'
     return 0
   fi
   if [[ ! -f "${KUBECONFIG}" ]]; then
-    printf 'cluster=present; kubeconfig=absent\n' \
-      >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes-status.txt"
+    write_cluster_status 'cluster=present; kubeconfig=absent'
     return 0
   fi
-  "${PLATFORM_ROOT}/tools/kubernetes/diagnostics.sh" || true
+  if "${PLATFORM_ROOT}/tools/kubernetes/diagnostics.sh"; then
+    write_cluster_status 'cluster=present; bounded inspection collected'
+  else
+    write_cluster_status 'cluster=present; bounded inspection failed; partial evidence retained'
+  fi
 }
 
 package_diagnostics() {
   local archive="${PLATFORM_STATE_DIR}/platform-diagnostics.zip"
   if ! command -v go >/dev/null 2>&1; then
-    printf 'WARN  diagnose      Go missing; raw diagnostics kept at .platform/diagnostics/raw\n' >&2
+    printf 'WARN  diagnose      Go missing; raw diagnostics kept below .platform/diagnostics\n' >&2
     return 0
   fi
   rm -f "${archive}" "${archive}.sha256"
@@ -66,7 +92,6 @@ package_diagnostics() {
 }
 
 main() {
-  rm -rf "${PLATFORM_DIAGNOSTICS_DIR}"
   mkdir -p "${PLATFORM_DIAGNOSTICS_DIR}"
   write_summary
   collect_cluster_diagnostics

@@ -17,6 +17,7 @@ has been promoted into an organization-wide policy.
 | Signal | Tool | Risk caught | Unique signal | RED | False-positive risk | Cost | Command | Maturity |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | source limits | policycheck | hidden giant source glue | exact 120/80 policy | long line/function | low | low | check-fast | BLOCKING |
+| Go format | gofmt | noncanonical Go source | language-native formatting | unformatted Go | low | low | check-fast | BLOCKING |
 | commit contract | repository script | untraceable history | exact Flare grammar | malformed messages | low | low | hook/prove-local | BLOCKING |
 | shell correctness | ShellCheck | shell defects | semantic shell analysis | invalid shell | low-medium | low | check-fast | ADVISORY |
 | shell format | shfmt | inconsistent shell layout | deterministic formatting | unformatted shell | low | low | check-fast | ADVISORY |
@@ -27,6 +28,7 @@ has been promoted into an organization-wide policy.
 | Kubernetes schema | kubeconform | invalid resource shape | versioned schema validation | invalid resource | low | medium | check | ADVISORY |
 | Kubernetes policy | KubeLinter | dangerous workload settings | workload security policy | privileged pod | medium | medium | check | ADVISORY |
 | context identity | repository guard | mutation of unrelated cluster | exact local identity | unrelated context | low | low | prove-local/runtime | BLOCKING |
+| lifecycle safety | repository fixture | unsafe delete/cleanup false green | ownership and absence proof | unowned/API failure | low | low | prove-local/runtime | BLOCKING |
 | artifact integrity | repository helper | stale/tampered handoff | deterministic manifest boundary | tamper/home path | low | low | prove-local | BLOCKING |
 | tool checksum admission | bootstrap guard | unchecked CI tool install | fail-closed CI admission | unlocked Aqua config | low | low | bootstrap/prove-local | BLOCKING |
 

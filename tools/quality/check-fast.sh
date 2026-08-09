@@ -5,12 +5,13 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 
 collect_shell_files() {
-  git ls-files '*.sh' | grep -v '^tests/fixtures/' || true
+  git ls-files --cached --others --exclude-standard '*.sh' |
+    grep -v '^tests/fixtures/' || true
 }
 
 check_go_tools() {
   local module
-  for module in tools/artifacts/archive tools/quality/policycheck; do
+  for module in tools/artifacts/archive tools/quality/policycheck kubernetes/reference/server; do
     (
       cd "${PLATFORM_ROOT}/${module}"
       go test ./...
@@ -27,7 +28,13 @@ check_source_policy() {
 
 check_gofmt() {
   local output
-  output="$(gofmt -d kubernetes/reference/server/main.go)"
+  local -a go_files=()
+  mapfile -t go_files < <(
+    git ls-files --cached --others --exclude-standard '*.go' |
+      grep -v '^tests/fixtures/' || true
+  )
+  ((${#go_files[@]})) || return 0
+  output="$(gofmt -d "${go_files[@]}")"
   if [[ -n "${output}" ]]; then
     printf '%s\n' "${output}" >&2
     return 1

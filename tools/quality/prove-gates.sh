@@ -53,6 +53,8 @@ prove_local_gates() {
     'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-line.sh'
   expect_failure source-function-policy bash -c \
     'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-function.sh'
+  expect_failure go-format bash -c \
+    '[[ -z "$(gofmt -d tests/fixtures/go/unformatted.go)" ]]'
   expect_failure doctor-boundary env PLATFORM_TEST_FORCE_MISSING=curl \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only
   expect_failure aqua-ci-unlocked env CI=true \
@@ -60,6 +62,7 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/bootstrap/prove-tool-lock.sh"
   expect_failure kube-context env PLATFORM_TEST_CURRENT_CONTEXT=kind-unrelated \
     "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh"
+  "${PLATFORM_ROOT}/tools/kubernetes/prove-safety.sh"
   prove_commit_policy
 }
 
@@ -86,6 +89,7 @@ main() {
   [[ "${1:-}" == "--local-only" ]] && local_only=true
   cd "${PLATFORM_ROOT}"
   require_tool go
+  require_tool gofmt
   prove_local_gates
   if [[ "${local_only}" == true ]]; then
     printf 'PASS  prove-gates    local configured gates demonstrated RED\n'
