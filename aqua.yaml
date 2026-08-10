@@ -1,7 +1,7 @@
 ---
 checksum:
   enabled: true
-  require_checksum: false
+  require_checksum: true
 registries:
   - type: standard
     ref: v4.550.0
