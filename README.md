@@ -15,7 +15,8 @@ instead of reimplementing them.
 - Project-local tool state under a guarded, non-symlink `.platform/` directory.
 - GitHub-first CI with immutable action references and least-privilege permissions.
 - Disposable `kind` cluster with an isolated project kubeconfig.
-- Deterministic reference workload built locally as `FROM scratch` and loaded into `kind`.
+- Reference workload with a reproducible host executable and deterministic
+  client-side Docker input, built locally as `FROM scratch` and loaded into `kind`.
 - Static infrastructure/security checks with intentional RED fixtures.
 - Deterministic review artifacts with checksum, canonical-byte, resource, and portable-path bounds.
 - Integration contracts for Flare and Poker without cross-repository writes.
@@ -63,8 +64,11 @@ operations and diagnostics are bounded; unsafe kubeconfig output paths are
 rejected before writes; namespace and cluster absence are explicitly verified.
 The reference server reports the SHA-256 of its own running executable, and the
 runtime proof rejects loaded image A when same-tag expectation B differs before
-running the positive and startup-failure journeys. See `docs/runbooks/local-kubernetes.md`
-and `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
+running the positive and startup-failure journeys. The accepted positive build
+is materialized from an exact clean Git commit/tree snapshot and passes a
+deterministic two-file tar through a hashing tee into `docker build`. See
+`docs/runbooks/local-kubernetes.md` and
+`docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
 
 ## Gate enforcement
 

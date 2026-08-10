@@ -5,6 +5,13 @@
 Run `make doctor`, `make bootstrap`, and the checksum-lock sequence described in
 `docs/decisions/0003-tool-bootstrap.md`. Docker must be reachable.
 
+Canonical positive evidence requires clean Git status at its capture and
+publication checkpoints. Commit the intended fixture changes first: the
+positive journey captures one exact commit/tree pair, materializes its inputs
+from Git objects, and refuses a dirty or changed source identity instead of
+silently accepting concurrent worktree edits. The final aggregate validates the
+retained positive clean-status record; it does not re-read Git status later.
+
 ## Normal verification
 
 ```bash
@@ -51,6 +58,13 @@ The positive probe uses an ephemeral IPv4 loopback port; there is no fixed
 CRI `imageID` intentionally use different identity domains and are marked
 non-comparable. The authoritative content bridge is equality between the fresh
 host binary SHA-256 and the value computed by the running executable itself.
+The builder presents a deterministic two-file tar to `docker build` on stdin.
+The proof requires its archive hash, both tee-captured input-stream hashes, and
+both exact byte counts to agree before accepting either image build. Immediately
+before kind load, the consumer requires build-source commit/tree equality with
+the positive source record, independently re-hashes the generated files against
+their manifest, and reconstructs that tar to verify the recorded hash and byte
+count.
 
 ## Failure evidence
 
@@ -66,6 +80,9 @@ node status. This is not a generic Flare/Poker log collector.
 
 A failed namespace query is not treated as successful deletion. A failed final
 cluster teardown also keeps `make verify-runtime` red.
+Positive and negative emergency EXIT traps remain armed until full PASS. Their
+cleanup is best effort on a failed path and is not evidence of absence; rerun the
+guarded absence checks before treating local state as clean.
 
 ## Incomplete kind creation
 

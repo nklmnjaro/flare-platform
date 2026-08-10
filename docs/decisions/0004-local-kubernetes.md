@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: runtime executable identity proven at `568b395`
+Status: runtime executable and build-input identity proven at `38730f9`
 
 ## Decision
 
@@ -37,6 +37,8 @@ the in-cluster ownership ConfigMap.
   selected port is unreachable afterward;
 - negative smoke is accepted only after the expected startup-failure marker is
   observed, then captures stream-bounded diagnostics and proves cleanup;
+- positive and negative EXIT traps stay armed until full PASS; emergency cleanup
+  is best effort and never substitutes for explicit absence evidence;
 - runtime verification performs an explicit final cluster teardown whose
   failure changes the command result.
 
@@ -56,13 +58,25 @@ the file resolved by `os.Executable`; `/identity` returns exactly the resulting
 `scratch`, runs as UID/GID 65532, receives no service-account token, has no added
 Linux capabilities, and uses bounded resources plus readiness/liveness probes.
 
-Docker receives a generated build context containing exactly two regular files:
-`Dockerfile` and `server`. A canonical manifest outside that context binds their
-paths, modes, sizes, and SHA-256 values, and an adjacent canary proves that the
-context boundary excludes unrelated repository content. BuildKit result IDs are
-bound to immediate `docker inspect` results. Local Docker config digests and the
-CRI-reported Pod image identity are retained with explicit, non-comparable
-semantics; neither substitutes for the running executable hash.
+The accepted positive journey requires a clean worktree and captures an exact
+Git commit/tree pair before its Docker build and kind image load. It materializes
+`Dockerfile` and the server source from that Git object snapshot, rather than
+from a concurrently mutable worktree. For each of two Docker builds, the builder
+creates an independently guarded staged context and deterministic tar containing
+exactly two regular files, `Dockerfile` and `server`. A canonical manifest
+outside each staged context binds their paths, modes, sizes, and SHA-256 values,
+and an adjacent canary proves that the context boundary excludes unrelated
+repository content. Both archive SHA-256 values, both exact tee-captured stdin
+SHA-256 values, and both byte counts must agree. This binds the exact bytes
+presented to each successful `docker build` command at the tee boundary; it does
+not claim an identity for daemon-internal reads or layers. Immediately before
+kind load, the consumer requires build-source commit/tree equality with the
+positive source record, re-hashes both generated context files against the
+manifest, and reconstructs the canonical tar to check the recorded hash and byte
+count. BuildKit result IDs are bound to immediate `docker inspect` results. Local
+Docker config digests and the CRI-reported Pod image identity are retained with
+explicit, non-comparable semantics; neither substitutes for the running
+executable hash.
 
 The kind node image is pinned by tag and digest. The fixture image is built
 locally with Docker build networking disabled and loaded directly into kind;
@@ -95,8 +109,9 @@ remains unchanged and continues to describe the environment in which it was
 captured.
 
 The runtime-identity implementation at
-`568b395d50b4fe4971b7f86c63b6b242ee781444` completed a clean live replay on
-2026-08-11. Its stale same-tag RED, exact positive executable identity, startup
+`38730f9e554c6905dd5f57d739dde64fb9fa6443` completed an integrated
+clean-worktree live replay on 2026-08-11. Its exact Git source snapshot and
+Docker input stream, stale same-tag RED, positive executable identity, startup
 failure, namespace cleanup, and repeated cluster teardown are recorded in
 `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`. That record
 supersedes only the runtime-identity boundary; it does not rewrite the earlier
