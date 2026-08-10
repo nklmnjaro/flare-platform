@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: offline safety contract proven; live Docker/kind replay pending
+Status: integrated and clean live replay proven at `42e877c`
 
 ## Decision
 
@@ -49,6 +49,32 @@ uses bounded resources plus readiness/liveness probes.
 The kind node image is pinned by tag and digest. The fixture image is built
 locally with Docker build networking disabled and loaded directly into kind;
 no external registry is required for the workload.
+
+## Promotion evidence boundary
+
+The repair implementation at
+`42e877c489afe8347e4f5a797d453838c95a59c0` completed the live Docker/kind
+journey on 2026-08-10. The positive probe returned exactly `ok` followed by LF;
+the negative workload emitted `intentional startup failure requested`; both
+journeys proved namespace absence. Final teardown and its idempotent repeat
+reported `cluster_after_final_teardown=absent` and
+`cluster_after_idempotent_teardown=absent`.
+
+The clean replacement-worker clone of the same implementation repeated the
+entire canonical matrix. Its `make verify-runtime` and `make verify` logs each
+retained the health response, startup marker, both namespace removals, and both
+cluster-absence markers. A later standalone `make kind-down` again confirmed
+absence. Initial/final Git status and `git fsck --full` were empty.
+
+The final documentation commit and directly cloneable bundle cannot embed
+their own identities without a self-reference. Their exact values are recorded
+and verified after commit in the accompanying `identities.env` contract.
+Hosted GitHub behavior remains outside the authorized local Docker/kind scope.
+
+The current disposition is recorded in
+`docs/evidence/PLATFORM-PROMOTION-CLOSURE-002__20260810.md`. Historical evidence
+remains unchanged and continues to describe the environment in which it was
+captured.
 
 ## Non-goals
 
