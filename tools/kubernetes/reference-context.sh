@@ -141,6 +141,27 @@ verify_context() {
   verify_context_manifest "${context}" "${manifest}" || return
 }
 
+context_identity_sha256() {
+  local context="$1" manifest="$2" digest
+  verify_context "${context}" "${manifest}" || return
+  digest="$(sha256sum -- "${manifest}" | awk '{print $1}')" || return
+  if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+    context_failure 'manifest SHA-256 is malformed' || return
+  fi
+  printf '%s\n' "${digest}" || return
+}
+
+assert_context_identity() {
+  local context="$1" manifest="$2" expected="$3" actual
+  if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
+    context_failure 'expected context identity is malformed' || return
+  fi
+  actual="$(context_identity_sha256 "${context}" "${manifest}")" || return
+  if [[ "${actual}" != "${expected}" ]]; then
+    context_failure 'context identity changed across guarded operation' || return
+  fi
+}
+
 write_manifest() {
   local context="$1"
   local target="$2"
@@ -181,6 +202,31 @@ stage_context() {
   verify_context "${REFERENCE_CONTEXT}" "${REFERENCE_MANIFEST}" || return
 }
 
+stage_context_snapshot() {
+  local source="$1" source_manifest="$2" snapshot="$3" manifest="$4" expected="$5"
+  local dockerfile_target server_target
+  local -a entries=()
+  if [[ -L "${snapshot}" || ! -d "${snapshot}" || -L "${manifest}" || ! -f "${manifest}" ]]; then
+    context_failure 'snapshot paths are missing or unsafe' || return
+  fi
+  shopt -s dotglob nullglob || return
+  entries=("${snapshot}"/*)
+  shopt -u dotglob nullglob || return
+  if ((${#entries[@]})); then
+    context_failure 'snapshot directory must begin empty' || return
+  fi
+  assert_context_identity "${source}" "${source_manifest}" "${expected}" || return
+  dockerfile_target="${snapshot}/Dockerfile"
+  server_target="${snapshot}/server"
+  cp -- "${source}/Dockerfile" "${dockerfile_target}" || return
+  cp -- "${source}/server" "${server_target}" || return
+  chmod 0644 "${dockerfile_target}" || return
+  chmod 0755 "${server_target}" || return
+  write_manifest "${snapshot}" "${manifest}" || return
+  assert_context_identity "${snapshot}" "${manifest}" "${expected}" || return
+  assert_context_identity "${source}" "${source_manifest}" "${expected}" || return
+}
+
 expect_context_failure() {
   local label="$1"
   local expected="$2"
@@ -200,13 +246,36 @@ expect_context_failure() {
   printf 'PASS  reference-red %s\n' "${label}" || return
 }
 
+expect_context_identity_failure() {
+  local label="$1" context="$2" manifest="$3" expected="$4"
+  local output status
+  if output="$(assert_context_identity "${context}" "${manifest}" "${expected}" 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ||
+    "${output}" != 'FAIL  reference-context context identity changed across guarded operation' ]]; then
+    printf 'FAIL  reference-context %s failed with status=%s output=%q\n' \
+      "${label}" "${status}" "${output}" >&2 || return
+    return 1
+  fi
+  printf 'PASS  reference-red %s\n' "${label}" || return
+}
+
 prove_context_contract() (
   local context="${PLATFORM_STATE_DIR}/reference/context-proof"
   local manifest="${PLATFORM_STATE_DIR}/reference/context-proof.manifest.tsv"
-  local dockerfile server unexpected
-  trap 'rm -rf -- "${context}"; rm -f -- "${manifest}"' EXIT || return
+  local snapshot="${PLATFORM_STATE_DIR}/reference/context-snapshot-proof"
+  local snapshot_manifest="${PLATFORM_STATE_DIR}/reference/context-snapshot-proof.manifest.tsv"
+  local baseline_identity dockerfile server unexpected
+  trap 'rm -rf -- "${context}" "${snapshot}"; rm -f -- "${manifest}" "${snapshot_manifest}"' EXIT || return
   reset_state_directory "reference/context-proof" || return
+  reset_state_directory "reference/context-snapshot-proof" || return
   manifest="$(prepare_state_file "reference/context-proof.manifest.tsv")" || return
+  snapshot_manifest="$(prepare_state_file \
+    "reference/context-snapshot-proof.manifest.tsv")" || return
+  : >"${snapshot_manifest}" || return
   dockerfile="$(prepare_state_file "reference/context-proof/Dockerfile")" || return
   server="$(prepare_state_file "reference/context-proof/server")" || return
   unexpected="$(prepare_state_file "reference/context-proof/unexpected.txt")" || return
@@ -216,6 +285,21 @@ prove_context_contract() (
   chmod 0755 "${server}" || return
   write_manifest "${context}" "${manifest}" || return
   verify_context "${context}" "${manifest}" || return
+  baseline_identity="$(context_identity_sha256 "${context}" "${manifest}")" || return
+  stage_context_snapshot "${context}" "${manifest}" "${snapshot}" \
+    "${snapshot_manifest}" "${baseline_identity}" || return
+  printf 'SERVER\n' >"${snapshot}/server" || return
+  expect_context_failure changed-snapshot-file \
+    'FAIL  reference-context manifest content does not match sorted context metadata' \
+    "${snapshot}" "${snapshot_manifest}" || return
+  printf 'FROM busybox\nCOPY server /server\n' >"${dockerfile}" || return
+  write_manifest "${context}" "${manifest}" || return
+  verify_context "${context}" "${manifest}" || return
+  expect_context_identity_failure coherent-context-change \
+    "${context}" "${manifest}" "${baseline_identity}" || return
+  printf 'FROM scratch\nCOPY server /server\n' >"${dockerfile}" || return
+  write_manifest "${context}" "${manifest}" || return
+  assert_context_identity "${context}" "${manifest}" "${baseline_identity}" || return
   printf 'canary\n' >"${unexpected}" || return
   expect_context_failure unexpected-file \
     'FAIL  reference-context unexpected path: unexpected.txt' "${context}" "${manifest}" || return

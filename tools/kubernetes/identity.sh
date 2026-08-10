@@ -109,12 +109,21 @@ runtime_identity_parse_port() {
 
 runtime_identity_reset_build_fields() {
   RUNTIME_BUILD_SCHEMA=""
+  RUNTIME_BUILD_SOURCE_COMMIT=""
+  RUNTIME_BUILD_SOURCE_TREE=""
+  RUNTIME_BUILD_SOURCE_SEMANTICS=""
   RUNTIME_HOST_BINARY_SHA256=""
   RUNTIME_HOST_BINARY_SHA256_SECOND=""
   RUNTIME_HOST_BINARY_REPRODUCIBLE=""
   RUNTIME_HOST_BINARY_BYTES=""
   RUNTIME_CONTEXT_MANIFEST_PATH=""
   RUNTIME_CONTEXT_MANIFEST_SHA256=""
+  RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256=""
+  RUNTIME_BUILD_CONTEXT_STREAM_SHA256_FIRST=""
+  RUNTIME_BUILD_CONTEXT_STREAM_SHA256_SECOND=""
+  RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST=""
+  RUNTIME_BUILD_CONTEXT_STREAM_BYTES_SECOND=""
+  RUNTIME_BUILD_CONTEXT_INPUT_SEMANTICS=""
   RUNTIME_BUILD_CONTEXT_BYTES=""
   RUNTIME_BUILD_CONTEXT_CANARY_EXCLUDED=""
   RUNTIME_TEMP_IMAGE_TAG=""
@@ -127,23 +136,30 @@ runtime_identity_reset_build_fields() {
   RUNTIME_BUILD_LOG_FIRST_PATH=""
   RUNTIME_BUILD_LOG_FIRST_SHA256=""
   RUNTIME_BUILD_LOG_FIRST_RESULT_CONFIG_ID=""
-  RUNTIME_BUILD_LOG_FIRST_CONTEXT_TRANSFER=""
   RUNTIME_BUILD_LOG_SECOND_PATH=""
   RUNTIME_BUILD_LOG_SECOND_SHA256=""
   RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID=""
-  RUNTIME_BUILD_LOG_SECOND_CONTEXT_TRANSFER=""
 }
 
 runtime_identity_assign_build_field() {
   local key="$1" value="$2"
   case "${key}" in
     SCHEMA) RUNTIME_BUILD_SCHEMA="${value}" ;;
+    BUILD_SOURCE_COMMIT) RUNTIME_BUILD_SOURCE_COMMIT="${value}" ;;
+    BUILD_SOURCE_TREE) RUNTIME_BUILD_SOURCE_TREE="${value}" ;;
+    BUILD_SOURCE_SEMANTICS) RUNTIME_BUILD_SOURCE_SEMANTICS="${value}" ;;
     HOST_BINARY_SHA256) RUNTIME_HOST_BINARY_SHA256="${value}" ;;
     HOST_BINARY_SHA256_SECOND) RUNTIME_HOST_BINARY_SHA256_SECOND="${value}" ;;
     HOST_BINARY_REPRODUCIBLE) RUNTIME_HOST_BINARY_REPRODUCIBLE="${value}" ;;
     HOST_BINARY_BYTES) RUNTIME_HOST_BINARY_BYTES="${value}" ;;
     CONTEXT_MANIFEST_PATH) RUNTIME_CONTEXT_MANIFEST_PATH="${value}" ;;
     CONTEXT_MANIFEST_SHA256) RUNTIME_CONTEXT_MANIFEST_SHA256="${value}" ;;
+    BUILD_CONTEXT_ARCHIVE_SHA256) RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256="${value}" ;;
+    BUILD_CONTEXT_STREAM_SHA256_FIRST) RUNTIME_BUILD_CONTEXT_STREAM_SHA256_FIRST="${value}" ;;
+    BUILD_CONTEXT_STREAM_SHA256_SECOND) RUNTIME_BUILD_CONTEXT_STREAM_SHA256_SECOND="${value}" ;;
+    BUILD_CONTEXT_STREAM_BYTES_FIRST) RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST="${value}" ;;
+    BUILD_CONTEXT_STREAM_BYTES_SECOND) RUNTIME_BUILD_CONTEXT_STREAM_BYTES_SECOND="${value}" ;;
+    BUILD_CONTEXT_INPUT_SEMANTICS) RUNTIME_BUILD_CONTEXT_INPUT_SEMANTICS="${value}" ;;
     BUILD_CONTEXT_BYTES) RUNTIME_BUILD_CONTEXT_BYTES="${value}" ;;
     BUILD_CONTEXT_CANARY_EXCLUDED) RUNTIME_BUILD_CONTEXT_CANARY_EXCLUDED="${value}" ;;
     TEMP_IMAGE_TAG) RUNTIME_TEMP_IMAGE_TAG="${value}" ;;
@@ -156,11 +172,9 @@ runtime_identity_assign_build_field() {
     BUILD_LOG_FIRST_PATH) RUNTIME_BUILD_LOG_FIRST_PATH="${value}" ;;
     BUILD_LOG_FIRST_SHA256) RUNTIME_BUILD_LOG_FIRST_SHA256="${value}" ;;
     BUILD_LOG_FIRST_RESULT_CONFIG_ID) RUNTIME_BUILD_LOG_FIRST_RESULT_CONFIG_ID="${value}" ;;
-    BUILD_LOG_FIRST_CONTEXT_TRANSFER) RUNTIME_BUILD_LOG_FIRST_CONTEXT_TRANSFER="${value}" ;;
     BUILD_LOG_SECOND_PATH) RUNTIME_BUILD_LOG_SECOND_PATH="${value}" ;;
     BUILD_LOG_SECOND_SHA256) RUNTIME_BUILD_LOG_SECOND_SHA256="${value}" ;;
     BUILD_LOG_SECOND_RESULT_CONFIG_ID) RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID="${value}" ;;
-    BUILD_LOG_SECOND_CONTEXT_TRANSFER) RUNTIME_BUILD_LOG_SECOND_CONTEXT_TRANSFER="${value}" ;;
     *)
       printf 'FAIL  runtime-id    unexpected build identity key: %s\n' "${key}" >&2
       return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
@@ -179,7 +193,7 @@ runtime_identity_load_build_env() {
   fi
   bytes="$(wc -c <"${build_env}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   line_count="$(wc -l <"${build_env}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  if ((bytes < 1 || bytes > RUNTIME_IDENTITY_MAX_BUILD_ENV_BYTES || line_count != 24)); then
+  if ((bytes < 1 || bytes > RUNTIME_IDENTITY_MAX_BUILD_ENV_BYTES || line_count != 31)); then
     printf 'FAIL  runtime-id    malformed build identity record\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
@@ -204,15 +218,53 @@ runtime_identity_load_build_env() {
     ((record_count += 1))
     runtime_identity_assign_build_field "${key}" "${value}" || return
   done <"${build_env}"
-  if ((record_count != 24)); then
+  if ((record_count != 31)); then
     printf 'FAIL  runtime-id    malformed build identity record\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
   runtime_identity_validate_build_env
 }
 
+runtime_identity_validate_source_fields() {
+  if [[ ! "${RUNTIME_BUILD_SOURCE_COMMIT}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${RUNTIME_BUILD_SOURCE_TREE}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    "${RUNTIME_BUILD_SOURCE_SEMANTICS}" != git-commit-tree-snapshot ]]; then
+    printf 'FAIL  runtime-id    malformed build source identity\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+}
+
+runtime_identity_require_source() {
+  local expected_commit="$1" expected_tree="$2"
+  runtime_identity_validate_source_fields || return
+  if [[ "${RUNTIME_BUILD_SOURCE_COMMIT}" != "${expected_commit}" ||
+    "${RUNTIME_BUILD_SOURCE_TREE}" != "${expected_tree}" ]]; then
+    printf 'FAIL  runtime-id    build source differs from captured source revision\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+}
+
+runtime_identity_validate_context_input() {
+  if ! runtime_identity_is_sha256 "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}" ||
+    ! runtime_identity_is_sha256 "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_FIRST}" ||
+    ! runtime_identity_is_sha256 "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_SECOND}"; then
+    printf 'FAIL  runtime-id    malformed Docker input stream identity\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+  if [[ "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}" == "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_FIRST}" &&
+    "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}" == "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_SECOND}" &&
+    "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST}" =~ ^[1-9][0-9]{0,8}$ &&
+    "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST}" == "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_SECOND}" &&
+    "${RUNTIME_BUILD_CONTEXT_INPUT_SEMANTICS}" == tee-captured-deterministic-tar ]]; then
+    return 0
+  else
+    printf 'FAIL  runtime-id    malformed Docker input stream identity\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+}
+
 runtime_identity_validate_host_context() {
-  if [[ "${RUNTIME_BUILD_SCHEMA}" != flare-platform-reference-build-v1 ]] ||
+  if [[ "${RUNTIME_BUILD_SCHEMA}" != flare-platform-reference-build-v2 ]] ||
     ! runtime_identity_is_sha256 "${RUNTIME_HOST_BINARY_SHA256}" ||
     ! runtime_identity_is_sha256 "${RUNTIME_HOST_BINARY_SHA256_SECOND}" ||
     ! runtime_identity_is_sha256 "${RUNTIME_CONTEXT_MANIFEST_SHA256}"; then
@@ -265,15 +317,12 @@ runtime_identity_validate_docker_fields() {
 }
 
 runtime_identity_validate_build_logs() {
-  local transfer_pattern='^[0-9]+([.][0-9]+)?[kMGT]?B$'
   if [[ "${RUNTIME_BUILD_LOG_FIRST_PATH}" != .platform/reference/docker-build-first.log ||
     "${RUNTIME_BUILD_LOG_SECOND_PATH}" != .platform/reference/docker-build-second.log ||
     ! "${RUNTIME_BUILD_LOG_FIRST_SHA256}" =~ ^[0-9a-f]{64}$ ||
     ! "${RUNTIME_BUILD_LOG_SECOND_SHA256}" =~ ^[0-9a-f]{64}$ ||
     ! "${RUNTIME_BUILD_LOG_FIRST_RESULT_CONFIG_ID}" =~ ^sha256:[0-9a-f]{64}$ ||
-    ! "${RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID}" =~ ^sha256:[0-9a-f]{64}$ ||
-    ! "${RUNTIME_BUILD_LOG_FIRST_CONTEXT_TRANSFER}" =~ ${transfer_pattern} ||
-    ! "${RUNTIME_BUILD_LOG_SECOND_CONTEXT_TRANSFER}" =~ ${transfer_pattern} ]]; then
+    ! "${RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     printf 'FAIL  runtime-id    malformed bounded build-log identity\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
@@ -285,14 +334,18 @@ runtime_identity_validate_build_logs() {
 }
 
 runtime_identity_validate_build_env() {
+  runtime_identity_validate_source_fields || return
   runtime_identity_validate_host_context || return
+  runtime_identity_validate_context_input || return
   runtime_identity_validate_docker_fields || return
   runtime_identity_validate_build_logs
 }
 
-runtime_identity_verify_build_artifacts() {
+runtime_identity_verify_context_files() {
   local context="$1" manifest="$2"
-  local manifest_sha dockerfile_bytes server_bytes
+  local dockerfile_bytes dockerfile_line dockerfile_mode dockerfile_sha
+  local manifest_bytes manifest_lines manifest_sha server_bytes server_line server_mode server_sha
+  local -a lines=()
   if [[ -L "${context}" || ! -d "${context}" || -L "${manifest}" || ! -f "${manifest}" ||
     -L "${context}/Dockerfile" || ! -f "${context}/Dockerfile" ||
     -L "${context}/server" || ! -f "${context}/server" ]]; then
@@ -301,23 +354,70 @@ runtime_identity_verify_build_artifacts() {
   fi
   manifest_sha="$(sha256sum -- "${manifest}" | awk '{print $1}')" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  manifest_bytes="$(wc -c <"${manifest}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  manifest_lines="$(wc -l <"${manifest}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  mapfile -t lines <"${manifest}" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   dockerfile_bytes="$(stat -c '%s' "${context}/Dockerfile")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   server_bytes="$(stat -c '%s' "${context}/server")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  if [[ "${manifest_sha}" != "${RUNTIME_CONTEXT_MANIFEST_SHA256}" ||
-    "${server_bytes}" != "${RUNTIME_HOST_BINARY_BYTES}" ]] ||
+  dockerfile_mode="$(stat -c '%a' "${context}/Dockerfile")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  server_mode="$(stat -c '%a' "${context}/server")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  dockerfile_sha="$(sha256sum -- "${context}/Dockerfile" | awk '{print $1}')" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  server_sha="$(sha256sum -- "${context}/server" | awk '{print $1}')" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  printf -v dockerfile_line 'Dockerfile\t0%s\t%s\t%s' \
+    "${dockerfile_mode}" "${dockerfile_bytes}" "${dockerfile_sha}"
+  printf -v server_line 'server\t0%s\t%s\t%s' \
+    "${server_mode}" "${server_bytes}" "${server_sha}"
+  if ((manifest_bytes < 1 || manifest_bytes > 1024 || manifest_lines != 3 || ${#lines[@]} != 3)) ||
+    [[ "${lines[0]:-}" != $'path\tmode\tsize\tsha256' ||
+      "${lines[1]:-}" != "${dockerfile_line}" || "${lines[2]:-}" != "${server_line}" ||
+      "${manifest_sha}" != "${RUNTIME_CONTEXT_MANIFEST_SHA256}" ||
+      "${server_sha}" != "${RUNTIME_HOST_BINARY_SHA256}" ||
+      "${server_bytes}" != "${RUNTIME_HOST_BINARY_BYTES}" ]] ||
     ((dockerfile_bytes + server_bytes != RUNTIME_BUILD_CONTEXT_BYTES)); then
     printf 'FAIL  runtime-id    build artifacts disagree with build identity record\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
+}
+
+runtime_identity_verify_context_archive() (
+  local context="$1" archive="" archive_bytes archive_sha entries
+  ensure_state_directory reference || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  archive="$(mktemp "${PLATFORM_STATE_DIR}/reference/.context-verify.XXXXXXXX.tar")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  trap 'rm -f -- "${archive}"' EXIT
+  tar --sort=name --format=ustar --mtime='UTC 1970-01-01' \
+    --owner=0 --group=0 --numeric-owner -cf "${archive}" \
+    -C "${context}" Dockerfile server || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  entries="$(tar -tf "${archive}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  archive_bytes="$(stat -c '%s' "${archive}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  archive_sha="$(sha256sum -- "${archive}" | awk '{print $1}')" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  if [[ "${entries}" != $'Dockerfile\nserver' ||
+    "${archive_sha}" != "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}" ||
+    "${archive_bytes}" != "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST}" ]]; then
+    printf 'FAIL  runtime-id    deterministic context archive disagrees with build identity record\n' \
+      >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+)
+
+runtime_identity_verify_build_artifacts() {
+  local context="$1" manifest="$2"
+  runtime_identity_verify_context_files "${context}" "${manifest}" || return
+  runtime_identity_verify_context_archive "${context}" || return
   runtime_identity_verify_build_log_files
 }
 
 runtime_identity_verify_build_log_files() {
   local first="${PLATFORM_ROOT}/${RUNTIME_BUILD_LOG_FIRST_PATH}"
   local second="${PLATFORM_ROOT}/${RUNTIME_BUILD_LOG_SECOND_PATH}"
-  local first_bytes second_bytes first_sha second_sha first_transfer second_transfer
+  local first_bytes second_bytes first_sha second_sha
   local first_result second_result
   if [[ -L "${first}" || ! -f "${first}" || -L "${second}" || ! -f "${second}" ]]; then
     printf 'FAIL  runtime-id    build logs are missing or unsafe\n' >&2
@@ -331,18 +431,12 @@ runtime_identity_verify_build_log_files() {
   fi
   first_sha="$(sha256sum -- "${first}" | awk '{print $1}')" || return
   second_sha="$(sha256sum -- "${second}" | awk '{print $1}')" || return
-  first_transfer="$(sed -n 's/^.*transferring context: \([^[:space:]]*\).*$/\1/p' \
-    "${first}" | tail -n 1)" || return
-  second_transfer="$(sed -n 's/^.*transferring context: \([^[:space:]]*\).*$/\1/p' \
-    "${second}" | tail -n 1)" || return
   first_result="$(runtime_identity_extract_build_result_id "${first}")" || return
   second_result="$(runtime_identity_extract_build_result_id "${second}")" || return
   if [[ "${first_sha}" != "${RUNTIME_BUILD_LOG_FIRST_SHA256}" ||
     "${second_sha}" != "${RUNTIME_BUILD_LOG_SECOND_SHA256}" ||
     "${first_result}" != "${RUNTIME_BUILD_LOG_FIRST_RESULT_CONFIG_ID}" ||
-    "${second_result}" != "${RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID}" ||
-    "${first_transfer}" != "${RUNTIME_BUILD_LOG_FIRST_CONTEXT_TRANSFER}" ||
-    "${second_transfer}" != "${RUNTIME_BUILD_LOG_SECOND_CONTEXT_TRANSFER}" ]]; then
+    "${second_result}" != "${RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID}" ]]; then
     printf 'FAIL  runtime-id    build logs disagree with build identity record\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
@@ -427,7 +521,9 @@ runtime_identity_validate_positive_arguments() {
   runtime_identity_validate_build_env || return
   if [[ ! "${source_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
     ! "${source_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
-    ! "${worktree_clean}" =~ ^(true|false)$ ||
+    "${source_commit}" != "${RUNTIME_BUILD_SOURCE_COMMIT}" ||
+    "${source_tree}" != "${RUNTIME_BUILD_SOURCE_TREE}" ||
+    "${worktree_clean}" != true ||
     ! "${pod_image_id}" =~ ^[A-Za-z0-9._:/@+-]{1,512}$ ||
     "${health}" != ok || "${namespace_absent}" != true ||
     ! "${selected_port}" =~ ^[0-9]{1,5}$ ||
@@ -447,15 +543,28 @@ runtime_identity_render_positive() {
   local source_commit="$1" source_tree="$2" worktree_clean="$3" pod_image_id="$4"
   local running_sha="$5" health="$6" selected_port="$7"
   local cluster_cleanup="$8"
-  printf 'SCHEMA=flare-platform-runtime-identity-positive-v1\n'
+  printf 'SCHEMA=flare-platform-runtime-identity-positive-v2\n'
   printf 'SOURCE_COMMIT=%s\nSOURCE_TREE=%s\n' "${source_commit}" "${source_tree}"
   printf 'SOURCE_WORKTREE_CLEAN=%s\n' "${worktree_clean}"
+  printf 'BUILD_SOURCE_COMMIT=%s\n' "${RUNTIME_BUILD_SOURCE_COMMIT}"
+  printf 'BUILD_SOURCE_TREE=%s\n' "${RUNTIME_BUILD_SOURCE_TREE}"
+  printf 'BUILD_SOURCE_SEMANTICS=%s\n' "${RUNTIME_BUILD_SOURCE_SEMANTICS}"
   printf 'HOST_BINARY_SHA256=%s\n' "${RUNTIME_HOST_BINARY_SHA256}"
   printf 'HOST_BINARY_SHA256_SECOND=%s\n' "${RUNTIME_HOST_BINARY_SHA256_SECOND}"
   printf 'HOST_BINARY_REPRODUCIBLE=%s\n' "${RUNTIME_HOST_BINARY_REPRODUCIBLE}"
   printf 'HOST_BINARY_BYTES=%s\n' "${RUNTIME_HOST_BINARY_BYTES}"
   printf 'CONTEXT_MANIFEST_PATH=%s\n' "${RUNTIME_CONTEXT_MANIFEST_PATH}"
   printf 'CONTEXT_MANIFEST_SHA256=%s\n' "${RUNTIME_CONTEXT_MANIFEST_SHA256}"
+  printf 'BUILD_CONTEXT_ARCHIVE_SHA256=%s\n' "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}"
+  printf 'BUILD_CONTEXT_STREAM_SHA256_FIRST=%s\n' \
+    "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_FIRST}"
+  printf 'BUILD_CONTEXT_STREAM_SHA256_SECOND=%s\n' \
+    "${RUNTIME_BUILD_CONTEXT_STREAM_SHA256_SECOND}"
+  printf 'BUILD_CONTEXT_STREAM_BYTES_FIRST=%s\n' \
+    "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_FIRST}"
+  printf 'BUILD_CONTEXT_STREAM_BYTES_SECOND=%s\n' \
+    "${RUNTIME_BUILD_CONTEXT_STREAM_BYTES_SECOND}"
+  printf 'BUILD_CONTEXT_INPUT_SEMANTICS=%s\n' "${RUNTIME_BUILD_CONTEXT_INPUT_SEMANTICS}"
   printf 'BUILD_CONTEXT_BYTES=%s\n' "${RUNTIME_BUILD_CONTEXT_BYTES}"
   printf 'BUILD_CONTEXT_CANARY_EXCLUDED=%s\n' "${RUNTIME_BUILD_CONTEXT_CANARY_EXCLUDED}"
   printf 'DOCKER_CONFIG_ID_FIRST=%s\n' "${RUNTIME_DOCKER_CONFIG_ID_FIRST}"
@@ -465,10 +574,8 @@ runtime_identity_render_positive() {
   printf 'DOCKER_IDENTITY_SEMANTICS=%s\n' "${RUNTIME_DOCKER_IDENTITY_SEMANTICS}"
   printf 'BUILD_LOG_FIRST_SHA256=%s\n' "${RUNTIME_BUILD_LOG_FIRST_SHA256}"
   printf 'BUILD_LOG_FIRST_RESULT_CONFIG_ID=%s\n' "${RUNTIME_BUILD_LOG_FIRST_RESULT_CONFIG_ID}"
-  printf 'BUILD_LOG_FIRST_CONTEXT_TRANSFER=%s\n' "${RUNTIME_BUILD_LOG_FIRST_CONTEXT_TRANSFER}"
   printf 'BUILD_LOG_SECOND_SHA256=%s\n' "${RUNTIME_BUILD_LOG_SECOND_SHA256}"
   printf 'BUILD_LOG_SECOND_RESULT_CONFIG_ID=%s\n' "${RUNTIME_BUILD_LOG_SECOND_RESULT_CONFIG_ID}"
-  printf 'BUILD_LOG_SECOND_CONTEXT_TRANSFER=%s\n' "${RUNTIME_BUILD_LOG_SECOND_CONTEXT_TRANSFER}"
   printf 'POD_IMAGE_ID=%s\n' "${pod_image_id}"
   printf 'POD_IMAGE_ID_SEMANTICS=cri-reported-non-comparable-to-local-config-id\n'
   printf 'DOCKER_VS_POD_COMPARABLE=false\n'

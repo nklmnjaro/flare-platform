@@ -55,7 +55,10 @@ diagnostics_are_bounded() {
       printf 'FAIL  diagnostics   expected capture is missing: %s\n' "${capture}" >&2
       return 1
     fi
-    size="$(wc -c <"${file}" | tr -d ' ')"
+    if ! size="$(wc -c <"${file}")" || [[ ! "${size}" =~ ^[0-9]+$ ]]; then
+      printf 'FAIL  diagnostics   unable to measure capture: %s\n' "${file}" >&2
+      return 1
+    fi
     if ((size > 132000)); then
       printf 'FAIL  diagnostics   oversized file: %s\n' "${file}" >&2
       return 1
@@ -153,6 +156,26 @@ prove_negative_evidence_format() (
   printf 'PASS  kind-negative evidence format and rejection self-check\n'
 )
 
+prove_diagnostics_measurement_failure() (
+  local capture status
+  local -a captures=(nodes resources events describe-pods logs)
+  PLATFORM_DIAGNOSTICS_DIR="$(mktemp -d)"
+  trap 'rm -rf -- "${PLATFORM_DIAGNOSTICS_DIR}"' EXIT
+  mkdir -p -- "${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"
+  for capture in "${captures[@]}"; do
+    printf '%s\n' "${STARTUP_MARKER}" >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes/${capture}.txt"
+  done
+  wc() { return 1; }
+  if diagnostics_are_bounded >/dev/null 2>&1; then
+    printf 'FAIL  kind-negative diagnostics measurement failure was accepted\n' >&2
+    return 1
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq 1 ]] || return 1
+  printf 'PASS  kind-negative diagnostics measurement failure rejected\n'
+)
+
 main() {
   local diagnostics_bounded=false
   local evidence
@@ -163,6 +186,7 @@ main() {
 
   if [[ "${1:-}" == --self-check ]]; then
     prove_negative_evidence_format
+    prove_diagnostics_measurement_failure
     return
   fi
   trap emergency_cleanup EXIT
@@ -223,9 +247,9 @@ main() {
       status=1
     fi
   fi
-  trap - EXIT
   [[ "${status}" == 0 ]] || return 1
   printf 'PASS  kind-negative expected failure, diagnostics, and cleanup proved\n'
+  trap - EXIT
 }
 
 main "$@"

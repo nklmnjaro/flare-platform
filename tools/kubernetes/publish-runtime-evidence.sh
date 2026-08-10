@@ -6,13 +6,17 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
 
 POSITIVE_KEYS=(
   SCHEMA SOURCE_COMMIT SOURCE_TREE SOURCE_WORKTREE_CLEAN
+  BUILD_SOURCE_COMMIT BUILD_SOURCE_TREE BUILD_SOURCE_SEMANTICS
   HOST_BINARY_SHA256 HOST_BINARY_SHA256_SECOND HOST_BINARY_REPRODUCIBLE
   HOST_BINARY_BYTES CONTEXT_MANIFEST_PATH CONTEXT_MANIFEST_SHA256
+  BUILD_CONTEXT_ARCHIVE_SHA256 BUILD_CONTEXT_STREAM_SHA256_FIRST
+  BUILD_CONTEXT_STREAM_SHA256_SECOND BUILD_CONTEXT_STREAM_BYTES_FIRST
+  BUILD_CONTEXT_STREAM_BYTES_SECOND BUILD_CONTEXT_INPUT_SEMANTICS
   BUILD_CONTEXT_BYTES BUILD_CONTEXT_CANARY_EXCLUDED
   DOCKER_CONFIG_ID_FIRST DOCKER_CONFIG_ID_SECOND DOCKER_CONFIG_IDENTICAL
   DOCKER_REPO_DIGESTS DOCKER_IDENTITY_SEMANTICS
-  BUILD_LOG_FIRST_SHA256 BUILD_LOG_FIRST_RESULT_CONFIG_ID BUILD_LOG_FIRST_CONTEXT_TRANSFER
-  BUILD_LOG_SECOND_SHA256 BUILD_LOG_SECOND_RESULT_CONFIG_ID BUILD_LOG_SECOND_CONTEXT_TRANSFER
+  BUILD_LOG_FIRST_SHA256 BUILD_LOG_FIRST_RESULT_CONFIG_ID
+  BUILD_LOG_SECOND_SHA256 BUILD_LOG_SECOND_RESULT_CONFIG_ID
   POD_IMAGE_ID POD_IMAGE_ID_SEMANTICS DOCKER_VS_POD_COMPARABLE
   RUNNING_EXECUTABLE_SHA256 HEALTH_RESPONSE SELECTED_IPV4_PORT
   PORT_FORWARD_CLEANUP PORT_FORWARD_PID_ABSENT NAMESPACE_ABSENT CLUSTER_CLEANUP
@@ -90,28 +94,38 @@ evidence_value() {
 }
 
 assert_positive_formats() {
-  local file="$1" source_commit source_tree source_clean manifest_sha manifest_path
-  local log_first_sha log_second_sha transfer_first transfer_second pod_image_id
-  local transfer_pattern='^[0-9]+([.][0-9]+)?[kMGT]?B$'
+  local file="$1" source_commit source_tree source_clean build_source_commit build_source_tree
+  local archive_sha stream_first stream_second manifest_sha manifest_path
+  local log_first_sha log_second_sha stream_bytes_first stream_bytes_second pod_image_id
   source_commit="$(evidence_value "${file}" SOURCE_COMMIT)" || return
   source_tree="$(evidence_value "${file}" SOURCE_TREE)" || return
   source_clean="$(evidence_value "${file}" SOURCE_WORKTREE_CLEAN)" || return
+  build_source_commit="$(evidence_value "${file}" BUILD_SOURCE_COMMIT)" || return
+  build_source_tree="$(evidence_value "${file}" BUILD_SOURCE_TREE)" || return
   manifest_path="$(evidence_value "${file}" CONTEXT_MANIFEST_PATH)" || return
   manifest_sha="$(evidence_value "${file}" CONTEXT_MANIFEST_SHA256)" || return
+  archive_sha="$(evidence_value "${file}" BUILD_CONTEXT_ARCHIVE_SHA256)" || return
+  stream_first="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_SHA256_FIRST)" || return
+  stream_second="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_SHA256_SECOND)" || return
+  stream_bytes_first="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_BYTES_FIRST)" || return
+  stream_bytes_second="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_BYTES_SECOND)" || return
   log_first_sha="$(evidence_value "${file}" BUILD_LOG_FIRST_SHA256)" || return
   log_second_sha="$(evidence_value "${file}" BUILD_LOG_SECOND_SHA256)" || return
-  transfer_first="$(evidence_value "${file}" BUILD_LOG_FIRST_CONTEXT_TRANSFER)" || return
-  transfer_second="$(evidence_value "${file}" BUILD_LOG_SECOND_CONTEXT_TRANSFER)" || return
   pod_image_id="$(evidence_value "${file}" POD_IMAGE_ID)" || return
   if [[ ! "${source_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
     ! "${source_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
-    ! "${source_clean}" =~ ^(true|false)$ ||
+    "${source_clean}" != true ||
+    ! "${build_source_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${build_source_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
     "${manifest_path}" != .platform/reference/context.manifest.tsv ||
     ! "${manifest_sha}" =~ ^[0-9a-f]{64}$ ||
+    ! "${archive_sha}" =~ ^[0-9a-f]{64}$ ||
+    ! "${stream_first}" =~ ^[0-9a-f]{64}$ ||
+    ! "${stream_second}" =~ ^[0-9a-f]{64}$ ||
+    ! "${stream_bytes_first}" =~ ^[1-9][0-9]{0,8}$ ||
+    "${stream_bytes_first}" != "${stream_bytes_second}" ||
     ! "${log_first_sha}" =~ ^[0-9a-f]{64}$ ||
     ! "${log_second_sha}" =~ ^[0-9a-f]{64}$ ||
-    ! "${transfer_first}" =~ ${transfer_pattern} ||
-    ! "${transfer_second}" =~ ${transfer_pattern} ||
     ! "${pod_image_id}" =~ ^[A-Za-z0-9._:/@+-]{1,512}$ ]]; then
     evidence_failure 'positive journey field encoding is unsafe or malformed' || return
   fi
@@ -120,7 +134,8 @@ assert_positive_formats() {
 assert_positive_semantics() {
   local file="$1" first second running identical port host_bytes context_bytes
   local docker_first docker_second
-  local build_result_first build_result_second
+  local build_result_first build_result_second source_commit source_tree
+  local build_source_commit build_source_tree archive_sha stream_first stream_second
   assert_positive_formats "${file}" || return
   first="$(evidence_value "${file}" HOST_BINARY_SHA256)" || return
   second="$(evidence_value "${file}" HOST_BINARY_SHA256_SECOND)" || return
@@ -133,8 +148,21 @@ assert_positive_semantics() {
   docker_second="$(evidence_value "${file}" DOCKER_CONFIG_ID_SECOND)" || return
   build_result_first="$(evidence_value "${file}" BUILD_LOG_FIRST_RESULT_CONFIG_ID)" || return
   build_result_second="$(evidence_value "${file}" BUILD_LOG_SECOND_RESULT_CONFIG_ID)" || return
+  source_commit="$(evidence_value "${file}" SOURCE_COMMIT)" || return
+  source_tree="$(evidence_value "${file}" SOURCE_TREE)" || return
+  build_source_commit="$(evidence_value "${file}" BUILD_SOURCE_COMMIT)" || return
+  build_source_tree="$(evidence_value "${file}" BUILD_SOURCE_TREE)" || return
+  archive_sha="$(evidence_value "${file}" BUILD_CONTEXT_ARCHIVE_SHA256)" || return
+  stream_first="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_SHA256_FIRST)" || return
+  stream_second="$(evidence_value "${file}" BUILD_CONTEXT_STREAM_SHA256_SECOND)" || return
   runtime_identity_is_sha256 "${first}" || return 1
   if [[ "${first}" != "${second}" ]] || [[ "${first}" != "${running}" ||
+    "${source_commit}" != "${build_source_commit}" ||
+    "${source_tree}" != "${build_source_tree}" ||
+    "$(evidence_value "${file}" SOURCE_WORKTREE_CLEAN)" != true ||
+    "${archive_sha}" != "${stream_first}" || "${archive_sha}" != "${stream_second}" ||
+    "$(evidence_value "${file}" BUILD_SOURCE_SEMANTICS)" != git-commit-tree-snapshot ||
+    "$(evidence_value "${file}" BUILD_CONTEXT_INPUT_SEMANTICS)" != tee-captured-deterministic-tar ||
     ! "${docker_first}" =~ ^sha256:[0-9a-f]{64}$ ||
     ! "${docker_second}" =~ ^sha256:[0-9a-f]{64}$ ||
     "${build_result_first}" != "${docker_first}" ||
@@ -273,7 +301,7 @@ render_aggregate() {
   positive_sha="$(sha256sum -- "${positive}" | awk '{print $1}')" || return
   stale_sha="$(sha256sum -- "${stale}" | awk '{print $1}')" || return
   negative_sha="$(sha256sum -- "${negative}" | awk '{print $1}')" || return
-  printf 'SCHEMA=flare-platform-runtime-identity-evidence-v1\n'
+  printf 'SCHEMA=flare-platform-runtime-identity-evidence-v2\n'
   printf 'POSITIVE_EVIDENCE_SHA256=%s\nSTALE_EVIDENCE_SHA256=%s\n' \
     "${positive_sha}" "${stale_sha}"
   printf 'NEGATIVE_EVIDENCE_SHA256=%s\n' "${negative_sha}"
@@ -295,7 +323,7 @@ publish_aggregate() (
   positive_snapshot="$(snapshot_evidence "${positive}" positive-snapshot 8192)" || return
   stale_snapshot="$(snapshot_evidence "${stale}" stale-snapshot 8192)" || return
   negative_snapshot="$(snapshot_evidence "${negative}" negative-snapshot 1024)" || return
-  assert_key_order "${positive_snapshot}" flare-platform-runtime-identity-positive-v1 8192 \
+  assert_key_order "${positive_snapshot}" flare-platform-runtime-identity-positive-v2 8192 \
     "${POSITIVE_KEYS[@]}" || return
   assert_key_order "${stale_snapshot}" flare-platform-runtime-identity-stale-v1 8192 \
     "${STALE_KEYS[@]}" || return

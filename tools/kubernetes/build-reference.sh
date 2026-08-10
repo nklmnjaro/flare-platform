@@ -7,6 +7,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || exit 1
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh" || exit 1
 # shellcheck source=runtime.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh" || exit 1
+# shellcheck source=reference-context.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/reference-context.sh" || exit 1
 
 export LC_ALL=C
 
@@ -17,8 +19,12 @@ REFERENCE_CANARY_NAME="CONTEXT_CANARY_NOT_SENT"
 TEMP_IMAGE_TAG="flare-platform-reference:identity-first"
 MAX_BUILD_LOG_BYTES=131072
 BUILD_LOG_PATH=""
-BUILD_CONTEXT_TRANSFER=""
 BUILD_RESULT_CONFIG_ID=""
+BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT=""
+BUILD_CONTEXT_STREAM_SHA256_CURRENT=""
+BUILD_CONTEXT_STREAM_BYTES_CURRENT=""
+REFERENCE_SOURCE_COMMIT=""
+REFERENCE_SOURCE_TREE=""
 
 hash_file() {
   local path="$1"
@@ -28,14 +34,89 @@ hash_file() {
   printf '%s\n' "${digest}" || return
 }
 
+verify_canonical_context_identity() {
+  assert_context_identity "${REFERENCE_CONTEXT}" "${REFERENCE_MANIFEST}" \
+    "${CONTEXT_MANIFEST_SHA256:-}" || return
+}
+
+resolve_reference_source_identity() {
+  local requested_commit="${PLATFORM_REFERENCE_SOURCE_COMMIT:-}"
+  local requested_tree="${PLATFORM_REFERENCE_SOURCE_TREE:-}"
+  local resolved_commit resolved_tree
+  if [[ (-n "${requested_commit}" && -z "${requested_tree}") ||
+    (-z "${requested_commit}" && -n "${requested_tree}") ]]; then
+    printf 'FAIL  reference-build source commit/tree must be supplied together\n' >&2 || return
+    return 1
+  fi
+  if [[ -z "${requested_commit}" ]]; then
+    requested_commit="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')" || return
+    requested_tree="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')" || return
+  fi
+  if [[ ! "${requested_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${requested_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    printf 'FAIL  reference-build malformed source commit/tree identity\n' >&2 || return
+    return 1
+  fi
+  resolved_commit="$(git -C "${PLATFORM_ROOT}" rev-parse --verify "${requested_commit}^{commit}")" || return
+  resolved_tree="$(git -C "${PLATFORM_ROOT}" rev-parse --verify "${resolved_commit}^{tree}")" || return
+  if [[ "${resolved_commit}" != "${requested_commit}" || "${resolved_tree}" != "${requested_tree}" ]]; then
+    printf 'FAIL  reference-build source commit/tree identity mismatch\n' >&2 || return
+    return 1
+  fi
+  REFERENCE_SOURCE_COMMIT="${resolved_commit}"
+  REFERENCE_SOURCE_TREE="${resolved_tree}"
+}
+
+stage_reference_source_snapshot() {
+  local archive snapshot archive_bytes
+  local -a unsafe=()
+  snapshot="$(mktemp -d "${REFERENCE_ROOT}/.source.XXXXXXXX")" || return
+  archive="$(mktemp "${REFERENCE_ROOT}/.source-archive.XXXXXXXX")" || {
+    rm -rf -- "${snapshot}" || return
+    return 1
+  }
+  if ! git -C "${PLATFORM_ROOT}" archive --format=tar --output="${archive}" \
+    "${REFERENCE_SOURCE_COMMIT}" -- kubernetes/reference/Dockerfile \
+    kubernetes/reference/server; then
+    rm -rf -- "${snapshot}" || return
+    rm -f -- "${archive}" || return
+    return 1
+  fi
+  archive_bytes="$(stat -c '%s' "${archive}")" || {
+    rm -rf -- "${snapshot}" || return
+    rm -f -- "${archive}" || return
+    return 1
+  }
+  if ((archive_bytes < 1 || archive_bytes > 1048576)) ||
+    ! tar -xf "${archive}" -C "${snapshot}" --no-same-owner --no-same-permissions; then
+    rm -rf -- "${snapshot}" || return
+    rm -f -- "${archive}" || return
+    printf 'FAIL  reference-build guarded source snapshot is invalid\n' >&2 || return
+    return 1
+  fi
+  rm -f -- "${archive}" || return
+  mapfile -t unsafe < <(find "${snapshot}" -mindepth 1 \
+    \( -type l -o \( ! -type d ! -type f \) \) -print)
+  if ((${#unsafe[@]})) ||
+    [[ ! -f "${snapshot}/kubernetes/reference/Dockerfile" ||
+      ! -f "${snapshot}/kubernetes/reference/server/go.mod" ||
+      ! -f "${snapshot}/kubernetes/reference/server/main.go" ]]; then
+    rm -rf -- "${snapshot}" || return
+    printf 'FAIL  reference-build guarded source snapshot is unsafe\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${snapshot}" || return
+}
+
 build_host_binary() {
   local output="$1"
   local cache_relative="$2"
+  local source_directory="$3"
   local cache="${PLATFORM_STATE_DIR}/${cache_relative}"
   reset_state_directory "${cache_relative}" || return
   rm -f -- "${output}" || return
   (
-    cd -- "${PLATFORM_ROOT}/kubernetes/reference/server" || exit 1
+    cd -- "${source_directory}" || exit 1
     run_bounded 90s env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       GOCACHE="${cache}" GOTOOLCHAIN=local GOPROXY=off \
       go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
@@ -63,18 +144,6 @@ prove_host_binary_reproducibility() {
   printf 'PASS  reference-build reproducible_host_sha256=%s\n' "${first_sha}" || return
 }
 
-extract_context_transfer() {
-  local log="$1"
-  local transfer
-  transfer="$(sed -n 's/^.*transferring context: \([^[:space:]]*\).*$/\1/p' \
-    "${log}" | tail -n 1)" || return
-  if [[ ! "${transfer}" =~ ^[0-9]+([.][0-9]+)?[kMGT]?B$ ]]; then
-    printf 'FAIL  reference-build BuildKit context transfer evidence missing\n' >&2 || return
-    return 1
-  fi
-  printf '%s\n' "${transfer}" || return
-}
-
 extract_result_config_id() {
   local log="$1"
   local -a results=()
@@ -87,48 +156,119 @@ extract_result_config_id() {
   printf '%s\n' "${results[0]}" || return
 }
 
-capture_image_build() {
+write_context_archive() {
+  local snapshot="$1" archive="$2" entries
+  tar --sort=name --format=ustar --mtime='UTC 1970-01-01' \
+    --owner=0 --group=0 --numeric-owner -cf "${archive}" \
+    -C "${snapshot}" Dockerfile server || return
+  entries="$(tar -tf "${archive}")" || return
+  if [[ "${entries}" != $'Dockerfile\nserver' ]]; then
+    printf 'FAIL  reference-build deterministic context archive entries are not exact\n' \
+      >&2 || return
+    return 1
+  fi
+}
+
+verify_context_stream_identity() {
+  local archive="$1" consumed="$2" expected="$3"
+  local archive_sha consumed_sha
+  archive_sha="$(hash_file "${archive}")" || return
+  consumed_sha="$(hash_file "${consumed}")" || return
+  if [[ "${archive_sha}" != "${expected}" || "${consumed_sha}" != "${expected}" ]] ||
+    ! cmp --silent -- "${archive}" "${consumed}"; then
+    printf 'FAIL  reference-build Docker input stream bytes changed\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${consumed_sha}" || return
+}
+
+capture_image_build_snapshot() (
   local tag="$1"
   local log_relative="$2"
-  local log temporary size
+  local archive="" archive_bytes archive_sha consumed="" consumed_sha
+  local log snapshot="" snapshot_manifest="" temporary="" size
   local -a pipeline_status=()
+  trap '[[ -z "${snapshot}" ]] || rm -rf -- "${snapshot}";
+    [[ -z "${snapshot_manifest}" ]] || rm -f -- "${snapshot_manifest}";
+    [[ -z "${archive}" ]] || rm -f -- "${archive}";
+    [[ -z "${consumed}" ]] || rm -f -- "${consumed}";
+    [[ -z "${temporary}" ]] || rm -f -- "${temporary}"' EXIT
+  verify_canonical_context_identity || return
+  snapshot="$(mktemp -d "${REFERENCE_ROOT}/.docker-context.XXXXXXXX")" || return
+  snapshot_manifest="$(mktemp "${REFERENCE_ROOT}/.docker-context-manifest.XXXXXXXX")" || return
+  stage_context_snapshot "${REFERENCE_CONTEXT}" "${REFERENCE_MANIFEST}" \
+    "${snapshot}" "${snapshot_manifest}" "${CONTEXT_MANIFEST_SHA256}" || return
+  archive="$(mktemp "${REFERENCE_ROOT}/.docker-context.XXXXXXXX.tar")" || return
+  consumed="$(mktemp "${REFERENCE_ROOT}/.docker-consumed.XXXXXXXX.tar")" || return
+  write_context_archive "${snapshot}" "${archive}" || return
+  archive_bytes="$(stat -c '%s' "${archive}")" || return
+  if [[ ! "${archive_bytes}" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    printf 'FAIL  reference-build Docker input stream size is malformed\n' >&2 || return
+    return 1
+  fi
+  archive_sha="$(hash_file "${archive}")" || return
   log="$(prepare_state_file "${log_relative}")" || return
   temporary="$(mktemp "${REFERENCE_ROOT}/.docker-build.XXXXXXXX")" || return
   set +e
   # This foreground pipeline waits for both sides. head closes at MAX+1, and
   # run_bounded still provides a hard deadline if a producer ignores SIGPIPE.
-  run_bounded 180s env DOCKER_BUILDKIT=1 docker build \
+  # tee captures the exact tar byte stream delivered to Docker stdin.
+  # shellcheck disable=SC2016
+  run_bounded 180s bash -c '
+set -o pipefail
+tee "$1" <"$2" |
+  env DOCKER_BUILDKIT=1 docker build \
     --network=none --pull=false --no-cache --progress=plain \
-    --file "${REFERENCE_CONTEXT}/Dockerfile" --tag "${tag}" \
-    "${REFERENCE_CONTEXT}" 2>&1 | head -c "$((MAX_BUILD_LOG_BYTES + 1))" >"${temporary}"
+    --file Dockerfile --tag "$3" -
+' _ "${consumed}" "${archive}" "${tag}" 2>&1 |
+    head -c "$((MAX_BUILD_LOG_BYTES + 1))" >"${temporary}"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
+  consumed_sha="$(verify_context_stream_identity \
+    "${archive}" "${consumed}" "${archive_sha}")" || return
+  if ! assert_context_identity "${snapshot}" "${snapshot_manifest}" \
+    "${CONTEXT_MANIFEST_SHA256}" || ! verify_canonical_context_identity; then
+    printf 'FAIL  reference-build guarded context changed during Docker build\n' >&2 || return
+    return 1
+  fi
   size="$(wc -c <"${temporary}")" || {
-    rm -f -- "${temporary}" || return
     return 1
   }
   if [[ "${pipeline_status[1]}" -ne 0 || "${size}" -gt "${MAX_BUILD_LOG_BYTES}" ]]; then
-    rm -f -- "${temporary}" || return
     printf 'FAIL  reference-build Docker build log exceeded its capture boundary\n' >&2 || return
     return 1
   fi
   if [[ "${pipeline_status[0]}" -ne 0 ]]; then
     sed -n '1,160p' "${temporary}" >&2 || return
-    rm -f -- "${temporary}" || return
     printf 'FAIL  reference-build Docker build failed with status %s\n' \
       "${pipeline_status[0]}" >&2 || return
     return 1
   fi
   log="$(prepare_state_file "${log_relative}")" || {
-    rm -f -- "${temporary}" || return
     return 1
   }
   if ! mv -fT -- "${temporary}" "${log}"; then
-    rm -f -- "${temporary}" || return
     return 1
   fi
+  temporary=""
+  printf '%s %s %s\n' "${archive_sha}" "${consumed_sha}" "${archive_bytes}" || return
+)
+
+capture_image_build() {
+  local tag="$1" log_relative="$2" log input_identity extra
+  input_identity="$(capture_image_build_snapshot "${tag}" "${log_relative}")" || return
+  read -r BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT \
+    BUILD_CONTEXT_STREAM_SHA256_CURRENT BUILD_CONTEXT_STREAM_BYTES_CURRENT \
+    extra <<<"${input_identity}" || return
+  if ! [[ "${BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT}" =~ ^[0-9a-f]{64}$ &&
+    "${BUILD_CONTEXT_STREAM_SHA256_CURRENT}" == "${BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT}" &&
+    "${BUILD_CONTEXT_STREAM_BYTES_CURRENT}" =~ ^[1-9][0-9]{0,8}$ &&
+    -z "${extra}" ]]; then
+    printf 'FAIL  reference-build malformed Docker input stream identity\n' >&2 || return
+    return 1
+  fi
+  log="$(prepare_state_file "${log_relative}")" || return
   BUILD_LOG_PATH="${log}"
-  BUILD_CONTEXT_TRANSFER="$(extract_context_transfer "${log}")" || return
   BUILD_RESULT_CONFIG_ID="$(extract_result_config_id "${log}")" || return
 }
 
@@ -192,10 +332,14 @@ prove_canary_exclusion() {
 
 write_build_environment() {
   local target temporary
+  verify_canonical_context_identity || return
   target="$(prepare_state_file "reference/build.env")" || return
   temporary="$(mktemp "${REFERENCE_ROOT}/.build-env.XXXXXXXX")" || return
   printf '%s\n' \
-    'SCHEMA=flare-platform-reference-build-v1' \
+    'SCHEMA=flare-platform-reference-build-v2' \
+    "BUILD_SOURCE_COMMIT=${REFERENCE_SOURCE_COMMIT}" \
+    "BUILD_SOURCE_TREE=${REFERENCE_SOURCE_TREE}" \
+    'BUILD_SOURCE_SEMANTICS=git-commit-tree-snapshot' \
     "HOST_BINARY_SHA256=${HOST_BINARY_SHA256}" \
     "HOST_BINARY_SHA256_SECOND=${HOST_BINARY_SHA256_SECOND}" \
     'HOST_BINARY_REPRODUCIBLE=true' \
@@ -204,6 +348,12 @@ write_build_environment() {
     "BUILD_CONTEXT_CANARY_EXCLUDED=${BUILD_CONTEXT_CANARY_EXCLUDED}" \
     'CONTEXT_MANIFEST_PATH=.platform/reference/context.manifest.tsv' \
     "CONTEXT_MANIFEST_SHA256=${CONTEXT_MANIFEST_SHA256}" \
+    "BUILD_CONTEXT_ARCHIVE_SHA256=${BUILD_CONTEXT_ARCHIVE_SHA256}" \
+    "BUILD_CONTEXT_STREAM_SHA256_FIRST=${BUILD_CONTEXT_STREAM_SHA256_FIRST}" \
+    "BUILD_CONTEXT_STREAM_SHA256_SECOND=${BUILD_CONTEXT_STREAM_SHA256_SECOND}" \
+    "BUILD_CONTEXT_STREAM_BYTES_FIRST=${BUILD_CONTEXT_STREAM_BYTES_FIRST}" \
+    "BUILD_CONTEXT_STREAM_BYTES_SECOND=${BUILD_CONTEXT_STREAM_BYTES_SECOND}" \
+    'BUILD_CONTEXT_INPUT_SEMANTICS=tee-captured-deterministic-tar' \
     "TEMP_IMAGE_TAG=${TEMP_IMAGE_TAG}" \
     "FINAL_IMAGE_TAG=${PLATFORM_IMAGE}" \
     "DOCKER_CONFIG_ID_FIRST=${DOCKER_CONFIG_ID_FIRST}" \
@@ -214,11 +364,9 @@ write_build_environment() {
     'BUILD_LOG_FIRST_PATH=.platform/reference/docker-build-first.log' \
     "BUILD_LOG_FIRST_SHA256=${BUILD_LOG_FIRST_SHA256}" \
     "BUILD_LOG_FIRST_RESULT_CONFIG_ID=${BUILD_LOG_FIRST_RESULT_CONFIG_ID}" \
-    "BUILD_LOG_FIRST_CONTEXT_TRANSFER=${BUILD_LOG_FIRST_CONTEXT_TRANSFER}" \
     'BUILD_LOG_SECOND_PATH=.platform/reference/docker-build-second.log' \
     "BUILD_LOG_SECOND_SHA256=${BUILD_LOG_SECOND_SHA256}" \
     "BUILD_LOG_SECOND_RESULT_CONFIG_ID=${BUILD_LOG_SECOND_RESULT_CONFIG_ID}" \
-    "BUILD_LOG_SECOND_CONTEXT_TRANSFER=${BUILD_LOG_SECOND_CONTEXT_TRANSFER}" \
     >"${temporary}" || {
     rm -f -- "${temporary}" || return
     return 1
@@ -233,6 +381,12 @@ write_build_environment() {
     printf 'FAIL  reference-build build.env exceeded 8192 bytes\n' >&2 || return
     return 1
   fi
+  if ! verify_canonical_context_identity; then
+    rm -f -- "${temporary}" || return
+    printf 'FAIL  reference-build context changed before build evidence publication\n' \
+      >&2 || return
+    return 1
+  fi
   target="$(prepare_state_file "reference/build.env")" || {
     rm -f -- "${temporary}" || return
     return 1
@@ -243,36 +397,53 @@ write_build_environment() {
   fi
 }
 
-main() {
-  local canary first_binary second_binary
+main() (
+  local canary first_binary second_binary source_snapshot="" source_directory
+  trap '[[ -z "${source_snapshot}" ]] || rm -rf -- "${source_snapshot}"' EXIT
   require_tool go || return
   require_tool docker || return
+  require_tool git || return
+  require_tool tar || return
+  resolve_reference_source_identity || return
   reset_state_directory "reference" || return
+  source_snapshot="$(stage_reference_source_snapshot)" || return
+  source_directory="${source_snapshot}/kubernetes/reference/server"
+  REFERENCE_DOCKERFILE="${source_snapshot}/kubernetes/reference/Dockerfile"
+  printf 'INFO  reference-build source_commit=%s source_tree=%s\n' \
+    "${REFERENCE_SOURCE_COMMIT}" "${REFERENCE_SOURCE_TREE}" || return
   canary="$(prepare_state_file "reference/${REFERENCE_CANARY_NAME}")" || return
   printf 'this file must remain outside the Docker build context\n' >"${canary}" || return
   first_binary="$(prepare_state_file "reference/server-first")" || return
   second_binary="$(prepare_state_file "reference/server-second")" || return
-  build_host_binary "${first_binary}" "reference/go-cache-first" || return
-  build_host_binary "${second_binary}" "reference/go-cache-second" || return
+  build_host_binary "${first_binary}" "reference/go-cache-first" "${source_directory}" || return
+  build_host_binary "${second_binary}" "reference/go-cache-second" "${source_directory}" || return
   prove_host_binary_reproducibility "${first_binary}" "${second_binary}" || return
-  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" stage "${first_binary}" || return
-  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" verify || return
+  stage_context "${first_binary}" || return
+  CONTEXT_MANIFEST_SHA256="$(context_identity_sha256 \
+    "${REFERENCE_CONTEXT}" "${REFERENCE_MANIFEST}")" || return
   prove_canary_exclusion || return
   BUILD_CONTEXT_BYTES="$(measure_context_payload)" || return
-  CONTEXT_MANIFEST_SHA256="$(hash_file "${REFERENCE_MANIFEST}")" || return
 
   capture_image_build "${TEMP_IMAGE_TAG}" "reference/docker-build-first.log" || return
+  BUILD_CONTEXT_ARCHIVE_SHA256="${BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT}"
+  BUILD_CONTEXT_STREAM_SHA256_FIRST="${BUILD_CONTEXT_STREAM_SHA256_CURRENT}"
+  BUILD_CONTEXT_STREAM_BYTES_FIRST="${BUILD_CONTEXT_STREAM_BYTES_CURRENT}"
   BUILD_LOG_FIRST_SHA256="$(hash_file "${BUILD_LOG_PATH}")" || return
-  BUILD_LOG_FIRST_CONTEXT_TRANSFER="${BUILD_CONTEXT_TRANSFER}"
   BUILD_LOG_FIRST_RESULT_CONFIG_ID="${BUILD_RESULT_CONFIG_ID}"
   DOCKER_CONFIG_ID_FIRST="$(inspect_config_id "${TEMP_IMAGE_TAG}")" || return
   require_result_matches_inspect first "${BUILD_LOG_FIRST_RESULT_CONFIG_ID}" \
     "${DOCKER_CONFIG_ID_FIRST}" || return
 
-  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" verify || return
+  verify_canonical_context_identity || return
   capture_image_build "${PLATFORM_IMAGE}" "reference/docker-build-second.log" || return
+  BUILD_CONTEXT_STREAM_SHA256_SECOND="${BUILD_CONTEXT_STREAM_SHA256_CURRENT}"
+  BUILD_CONTEXT_STREAM_BYTES_SECOND="${BUILD_CONTEXT_STREAM_BYTES_CURRENT}"
+  if [[ "${BUILD_CONTEXT_ARCHIVE_SHA256_CURRENT}" != "${BUILD_CONTEXT_ARCHIVE_SHA256}" ||
+    "${BUILD_CONTEXT_STREAM_SHA256_SECOND}" != "${BUILD_CONTEXT_ARCHIVE_SHA256}" ]]; then
+    printf 'FAIL  reference-build Docker input streams are not reproducible\n' >&2 || return
+    return 1
+  fi
   BUILD_LOG_SECOND_SHA256="$(hash_file "${BUILD_LOG_PATH}")" || return
-  BUILD_LOG_SECOND_CONTEXT_TRANSFER="${BUILD_CONTEXT_TRANSFER}"
   BUILD_LOG_SECOND_RESULT_CONFIG_ID="${BUILD_RESULT_CONFIG_ID}"
   DOCKER_CONFIG_ID_SECOND="$(inspect_config_id "${PLATFORM_IMAGE}")" || return
   require_result_matches_inspect second "${BUILD_LOG_SECOND_RESULT_CONFIG_ID}" \
@@ -287,8 +458,10 @@ main() {
   docker_command 20s image rm "${TEMP_IMAGE_TAG}" >/dev/null || return
   printf 'PASS  image         %s binary_sha256=%s config_identical=%s\n' \
     "${PLATFORM_IMAGE}" "${HOST_BINARY_SHA256}" "${DOCKER_CONFIG_IDENTICAL}" || return
-  printf 'INFO  image         context_transfer_first=%s context_transfer_second=%s\n' \
-    "${BUILD_LOG_FIRST_CONTEXT_TRANSFER}" "${BUILD_LOG_SECOND_CONTEXT_TRANSFER}" || return
-}
+  printf 'INFO  image         context_stream_first=%sB context_stream_second=%sB\n' \
+    "${BUILD_CONTEXT_STREAM_BYTES_FIRST}" "${BUILD_CONTEXT_STREAM_BYTES_SECOND}" || return
+)
 
-main "$@" || exit $?
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@" || exit $?
+fi

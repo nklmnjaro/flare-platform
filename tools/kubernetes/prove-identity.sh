@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Proof helpers deliberately isolate mutable fixtures in subshells.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
@@ -27,13 +29,22 @@ expect_identity_failure() {
 write_build_env_fixture() {
   local target="$1"
   {
-    printf 'SCHEMA=flare-platform-reference-build-v1\n'
+    printf 'SCHEMA=flare-platform-reference-build-v2\n'
+    printf 'BUILD_SOURCE_COMMIT=%s\n' "$(printf '2%.0s' {1..40})"
+    printf 'BUILD_SOURCE_TREE=%s\n' "$(printf '3%.0s' {1..40})"
+    printf 'BUILD_SOURCE_SEMANTICS=git-commit-tree-snapshot\n'
     printf 'HOST_BINARY_SHA256=%s\n' "${SHA_A}"
     printf 'HOST_BINARY_SHA256_SECOND=%s\n' "${SHA_A}"
     printf 'HOST_BINARY_REPRODUCIBLE=true\n'
     printf 'HOST_BINARY_BYTES=7\n'
     printf 'CONTEXT_MANIFEST_PATH=.platform/reference/context.manifest.tsv\n'
     printf 'CONTEXT_MANIFEST_SHA256=%s\n' "$(printf 'c%.0s' {1..64})"
+    printf 'BUILD_CONTEXT_ARCHIVE_SHA256=%s\n' "$(printf '4%.0s' {1..64})"
+    printf 'BUILD_CONTEXT_STREAM_SHA256_FIRST=%s\n' "$(printf '4%.0s' {1..64})"
+    printf 'BUILD_CONTEXT_STREAM_SHA256_SECOND=%s\n' "$(printf '4%.0s' {1..64})"
+    printf 'BUILD_CONTEXT_STREAM_BYTES_FIRST=20\n'
+    printf 'BUILD_CONTEXT_STREAM_BYTES_SECOND=20\n'
+    printf 'BUILD_CONTEXT_INPUT_SEMANTICS=tee-captured-deterministic-tar\n'
     printf 'BUILD_CONTEXT_BYTES=20\n'
     printf 'BUILD_CONTEXT_CANARY_EXCLUDED=true\n'
     printf 'TEMP_IMAGE_TAG=flare-platform-reference:identity-first\n'
@@ -46,11 +57,9 @@ write_build_env_fixture() {
     printf 'BUILD_LOG_FIRST_PATH=.platform/reference/docker-build-first.log\n'
     printf 'BUILD_LOG_FIRST_SHA256=%s\n' "$(printf 'f%.0s' {1..64})"
     printf 'BUILD_LOG_FIRST_RESULT_CONFIG_ID=sha256:%s\n' "$(printf 'd%.0s' {1..64})"
-    printf 'BUILD_LOG_FIRST_CONTEXT_TRANSFER=20B\n'
     printf 'BUILD_LOG_SECOND_PATH=.platform/reference/docker-build-second.log\n'
     printf 'BUILD_LOG_SECOND_SHA256=%s\n' "$(printf '1%.0s' {1..64})"
     printf 'BUILD_LOG_SECOND_RESULT_CONFIG_ID=sha256:%s\n' "$(printf 'e%.0s' {1..64})"
-    printf 'BUILD_LOG_SECOND_CONTEXT_TRANSFER=30B\n'
   } >"${target}"
 }
 
@@ -82,10 +91,11 @@ prove_build_env_contract() {
   local repo_digest="${PROOF_DIRECTORY}/repo-digest.env"
   local canary="${PROOF_DIRECTORY}/canary.env"
   local result_mismatch="${PROOF_DIRECTORY}/result-mismatch.env"
+  local stream_mismatch="${PROOF_DIRECTORY}/stream-mismatch.env"
   write_build_env_fixture "${valid}"
   runtime_identity_load_build_env "${valid}"
   {
-    printf 'SC\0HEMA=flare-platform-reference-build-v1\n'
+    printf 'SC\0HEMA=flare-platform-reference-build-v2\n'
     tail -n +2 -- "${valid}"
   } >"${nul_key}"
   expect_identity_failure nul-build-key "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
@@ -110,13 +120,109 @@ prove_build_env_contract() {
   expect_identity_failure result-inspect-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
     'FAIL  runtime-id    Docker build result and inspect identity disagree' \
     runtime_identity_load_build_env "${result_mismatch}"
+  sed "s/^BUILD_CONTEXT_STREAM_SHA256_SECOND=.*$/BUILD_CONTEXT_STREAM_SHA256_SECOND=${SHA_B}/" \
+    "${valid}" >"${stream_mismatch}"
+  expect_identity_failure stream-capture-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker input stream identity' \
+    runtime_identity_load_build_env "${stream_mismatch}"
   runtime_identity_load_build_env "${valid}"
+  runtime_identity_require_source \
+    "$(printf '2%.0s' {1..40})" "$(printf '3%.0s' {1..40})"
+  expect_identity_failure source-record-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    build source differs from captured source revision' \
+    runtime_identity_require_source "$(printf '9%.0s' {1..40})" "$(printf '3%.0s' {1..40})"
 }
+
+write_context_manifest_fixture() {
+  local context="$1" manifest="$2"
+  local dockerfile_sha server_sha
+  dockerfile_sha="$(sha256sum -- "${context}/Dockerfile" | awk '{print $1}')" || return
+  server_sha="$(sha256sum -- "${context}/server" | awk '{print $1}')" || return
+  printf 'path\tmode\tsize\tsha256\n' >"${manifest}"
+  printf 'Dockerfile\t0644\t%s\t%s\n' \
+    "$(stat -c '%s' "${context}/Dockerfile")" "${dockerfile_sha}" >>"${manifest}"
+  printf 'server\t0755\t%s\t%s\n' \
+    "$(stat -c '%s' "${context}/server")" "${server_sha}" >>"${manifest}"
+}
+
+prove_context_file_hash_reds() (
+  local context="${PROOF_DIRECTORY}/consumer-context"
+  local manifest="${PROOF_DIRECTORY}/consumer-context.manifest.tsv"
+  local dockerfile_bytes
+  mkdir -p -- "${context}"
+  printf 'FROM scratch\n' >"${context}/Dockerfile"
+  printf 'server\n' >"${context}/server"
+  chmod 0644 "${context}/Dockerfile"
+  chmod 0755 "${context}/server"
+  write_context_manifest_fixture "${context}" "${manifest}"
+  RUNTIME_HOST_BINARY_SHA256="$(sha256sum -- "${context}/server" | awk '{print $1}')"
+  RUNTIME_HOST_BINARY_BYTES="$(stat -c '%s' "${context}/server")"
+  dockerfile_bytes="$(stat -c '%s' "${context}/Dockerfile")"
+  RUNTIME_BUILD_CONTEXT_BYTES="$((dockerfile_bytes + RUNTIME_HOST_BINARY_BYTES))"
+  RUNTIME_CONTEXT_MANIFEST_SHA256="$(sha256sum -- "${manifest}" | awk '{print $1}')"
+  runtime_identity_verify_context_files "${context}" "${manifest}"
+
+  printf 'SERVER\n' >"${context}/server"
+  expect_identity_failure changed-server-same-size "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    build artifacts disagree with build identity record' \
+    runtime_identity_verify_context_files "${context}" "${manifest}"
+  printf 'server\n' >"${context}/server"
+  printf 'FROM busybox\n' >"${context}/Dockerfile"
+  expect_identity_failure changed-dockerfile-same-size "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    build artifacts disagree with build identity record' \
+    runtime_identity_verify_context_files "${context}" "${manifest}"
+)
+
+prove_git_source_snapshot() (
+  local expected="${PROOF_DIRECTORY}/expected-source"
+  local snapshot="" source_root="${PROOF_DIRECTORY}/source-snapshot-root"
+  local path
+  source "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh"
+  REFERENCE_ROOT="${source_root}"
+  mkdir -p -- "${REFERENCE_ROOT}"
+  PLATFORM_REFERENCE_SOURCE_COMMIT="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')"
+  PLATFORM_REFERENCE_SOURCE_TREE="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')"
+  resolve_reference_source_identity
+  snapshot="$(stage_reference_source_snapshot)"
+  trap '[[ -z "${snapshot}" ]] || rm -rf -- "${snapshot}"' EXIT
+  for path in kubernetes/reference/Dockerfile \
+    kubernetes/reference/server/go.mod kubernetes/reference/server/main.go; do
+    git -C "${PLATFORM_ROOT}" show "${REFERENCE_SOURCE_COMMIT}:${path}" >"${expected}"
+    cmp --silent -- "${expected}" "${snapshot}/${path}"
+  done
+  PLATFORM_REFERENCE_SOURCE_TREE="$(printf 'f%.0s' {1..40})"
+  expect_identity_failure source-tree-record-mismatch 1 \
+    'FAIL  reference-build source commit/tree identity mismatch' \
+    resolve_reference_source_identity
+  printf 'PASS  runtime-id    build inputs materialized from captured Git commit/tree\n'
+)
+
+prove_docker_input_stream_red() (
+  local archive="${PROOF_DIRECTORY}/context.tar"
+  local consumed="${PROOF_DIRECTORY}/context.consumed.tar"
+  local context="${PROOF_DIRECTORY}/archive-context" expected
+  source "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh"
+  mkdir -p -- "${context}"
+  printf 'FROM scratch\n' >"${context}/Dockerfile"
+  printf 'server\n' >"${context}/server"
+  chmod 0644 "${context}/Dockerfile"
+  chmod 0755 "${context}/server"
+  write_context_archive "${context}" "${archive}"
+  expected="$(hash_file "${archive}")"
+  tee "${consumed}" <"${archive}" >/dev/null
+  [[ "$(verify_context_stream_identity "${archive}" "${consumed}" "${expected}")" == "${expected}" ]]
+  printf X >>"${consumed}"
+  expect_identity_failure changed-docker-input-stream 1 \
+    'FAIL  reference-build Docker input stream bytes changed' \
+    verify_context_stream_identity "${archive}" "${consumed}" "${expected}"
+  printf 'PASS  runtime-id    exact tee-captured Docker input stream identity proved\n'
+)
 
 prove_reference_context_red() {
   local output
   output="$(bash "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" prove)" || return
-  if ! grep -Fqx 'PASS  reference-red unexpected-file' <<<"${output}"; then
+  if ! grep -Fqx 'PASS  reference-red coherent-context-change' <<<"${output}" ||
+    ! grep -Fqx 'PASS  reference-red unexpected-file' <<<"${output}"; then
     printf 'FAIL  runtime-red   canonical unexpected-context RED was not proved\n' >&2
     return 1
   fi
@@ -220,12 +326,21 @@ SCHEMA
 SOURCE_COMMIT
 SOURCE_TREE
 SOURCE_WORKTREE_CLEAN
+BUILD_SOURCE_COMMIT
+BUILD_SOURCE_TREE
+BUILD_SOURCE_SEMANTICS
 HOST_BINARY_SHA256
 HOST_BINARY_SHA256_SECOND
 HOST_BINARY_REPRODUCIBLE
 HOST_BINARY_BYTES
 CONTEXT_MANIFEST_PATH
 CONTEXT_MANIFEST_SHA256
+BUILD_CONTEXT_ARCHIVE_SHA256
+BUILD_CONTEXT_STREAM_SHA256_FIRST
+BUILD_CONTEXT_STREAM_SHA256_SECOND
+BUILD_CONTEXT_STREAM_BYTES_FIRST
+BUILD_CONTEXT_STREAM_BYTES_SECOND
+BUILD_CONTEXT_INPUT_SEMANTICS
 BUILD_CONTEXT_BYTES
 BUILD_CONTEXT_CANARY_EXCLUDED
 DOCKER_CONFIG_ID_FIRST
@@ -235,10 +350,8 @@ DOCKER_REPO_DIGESTS
 DOCKER_IDENTITY_SEMANTICS
 BUILD_LOG_FIRST_SHA256
 BUILD_LOG_FIRST_RESULT_CONFIG_ID
-BUILD_LOG_FIRST_CONTEXT_TRANSFER
 BUILD_LOG_SECOND_SHA256
 BUILD_LOG_SECOND_RESULT_CONFIG_ID
-BUILD_LOG_SECOND_CONTEXT_TRANSFER
 POD_IMAGE_ID
 POD_IMAGE_ID_SEMANTICS
 DOCKER_VS_POD_COMPARABLE
@@ -259,21 +372,30 @@ prove_positive_rendering() {
   tree="$(printf '3%.0s' {1..40})"
   runtime_identity_begin_tracked_cleanup
   RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP=absent
-  runtime_identity_validate_positive_arguments "${commit}" "${tree}" false \
+  runtime_identity_validate_positive_arguments "${commit}" "${tree}" true \
     'containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
     "${SHA_A}" ok 43127 true deferred-to-verify-runtime
-  runtime_identity_render_positive "${commit}" "${tree}" false \
+  expect_identity_failure dirty-positive-evidence "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    refusing incomplete positive identity evidence' \
+    runtime_identity_validate_positive_arguments "${commit}" "${tree}" false \
+    'containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    "${SHA_A}" ok 43127 true deferred-to-verify-runtime
+  runtime_identity_render_positive "${commit}" "${tree}" true \
     'containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
     "${SHA_A}" ok 43127 deferred-to-verify-runtime >"${evidence}"
   assert_positive_key_set "${evidence}"
-  grep -Fqx 'SOURCE_WORKTREE_CLEAN=false' "${evidence}"
+  grep -Fqx 'SOURCE_WORKTREE_CLEAN=true' "${evidence}"
+  grep -Fqx "BUILD_SOURCE_COMMIT=${commit}" "${evidence}"
+  grep -Fqx 'BUILD_SOURCE_SEMANTICS=git-commit-tree-snapshot' "${evidence}"
+  grep -Fqx "BUILD_CONTEXT_ARCHIVE_SHA256=$(printf '4%.0s' {1..64})" "${evidence}"
+  grep -Fqx 'BUILD_CONTEXT_INPUT_SEMANTICS=tee-captured-deterministic-tar' "${evidence}"
   grep -Fqx 'BUILD_CONTEXT_BYTES=20' "${evidence}"
   grep -Fqx 'BUILD_CONTEXT_CANARY_EXCLUDED=true' "${evidence}"
   grep -Fqx 'DOCKER_REPO_DIGESTS=' "${evidence}"
   grep -Fqx 'DOCKER_VS_POD_COMPARABLE=false' "${evidence}"
   grep -Fqx "BUILD_LOG_FIRST_RESULT_CONFIG_ID=sha256:$(printf 'd%.0s' {1..64})" \
     "${evidence}"
-  [[ "$(wc -c <"${evidence}")" -le 4096 ]]
+  [[ "$(wc -c <"${evidence}")" -le 8192 ]]
   printf 'PASS  runtime-id    bounded positive evidence carries exact identity semantics\n'
 }
 
@@ -283,6 +405,9 @@ main() {
   trap 'rm -rf -- "${PROOF_DIRECTORY}"' EXIT
   prove_identity_response_reds
   prove_build_env_contract
+  prove_context_file_hash_reds
+  prove_git_source_snapshot
+  prove_docker_input_stream_red
   prove_reference_context_red
   prove_dynamic_port_contract
   prove_process_survival_red

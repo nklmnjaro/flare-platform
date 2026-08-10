@@ -19,14 +19,19 @@ SOURCE_TREE=""
 SOURCE_WORKTREE_CLEAN=false
 
 remove_probe_files() {
-  local file
+  local file status=0
   for file in "${PORT_FORWARD_LOG_FILE}" "${HEALTH_RESPONSE_FILE}" \
     "${IDENTITY_RESPONSE_FILE}"; do
-    [[ -z "${file}" ]] || rm -f -- "${file}"
+    if [[ -n "${file}" ]] && ! rm -f -- "${file}"; then
+      status=1
+    fi
   done
-  PORT_FORWARD_LOG_FILE=""
-  HEALTH_RESPONSE_FILE=""
-  IDENTITY_RESPONSE_FILE=""
+  if ((status == 0)); then
+    PORT_FORWARD_LOG_FILE=""
+    HEALTH_RESPONSE_FILE=""
+    IDENTITY_RESPONSE_FILE=""
+  fi
+  return "${status}"
 }
 
 stop_probe() {
@@ -66,7 +71,30 @@ capture_initial_source_state() {
   SOURCE_COMMIT="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')" || return
   SOURCE_TREE="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')" || return
   worktree_state="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 --untracked-files=all)" || return
-  [[ -n "${worktree_state}" ]] || SOURCE_WORKTREE_CLEAN=true
+  require_exact_source_state "${SOURCE_COMMIT}" "${SOURCE_TREE}" \
+    "${SOURCE_COMMIT}" "${SOURCE_TREE}" "${worktree_state}" || return
+  SOURCE_WORKTREE_CLEAN=true
+}
+
+require_exact_source_state() {
+  local expected_commit="$1" expected_tree="$2" actual_commit="$3" actual_tree="$4"
+  local worktree_state="$5"
+  if [[ ! "${expected_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${expected_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${actual_commit}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ||
+    ! "${actual_tree}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    printf 'FAIL  runtime-id    malformed source revision identity\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+  if [[ "${actual_commit}" != "${expected_commit}" ||
+    "${actual_tree}" != "${expected_tree}" ]]; then
+    printf 'FAIL  runtime-id    source revision changed during runtime verification\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+  if [[ -n "${worktree_state}" ]]; then
+    printf 'FAIL  runtime-id    source worktree is not clean for exact runtime build\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
 }
 
 load_reference_image() {
@@ -74,8 +102,11 @@ load_reference_image() {
   local context="${PLATFORM_STATE_DIR}/reference/context"
   local live_config_id
   local manifest="${PLATFORM_STATE_DIR}/reference/context.manifest.tsv"
-  "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh" || return
+  PLATFORM_REFERENCE_SOURCE_COMMIT="${SOURCE_COMMIT}" \
+    PLATFORM_REFERENCE_SOURCE_TREE="${SOURCE_TREE}" \
+    "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh" || return
   runtime_identity_load_build_env "${build_env}" || return
+  runtime_identity_require_source "${SOURCE_COMMIT}" "${SOURCE_TREE}" || return
   "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" verify || return
   runtime_identity_verify_build_artifacts "${context}" "${manifest}" || return
   live_config_id="$(docker_command 20s image inspect --format '{{.Id}}' \
@@ -241,21 +272,73 @@ publish_runtime_evidence() {
   source_commit="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')" || return
   source_tree="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')" || return
   worktree_state="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 --untracked-files=all)" || return
-  if [[ "${source_commit}" != "${SOURCE_COMMIT}" || "${source_tree}" != "${SOURCE_TREE}" ]]; then
-    printf 'FAIL  runtime-id    source revision changed during runtime verification\n' >&2
-    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  fi
-  [[ -z "${worktree_state}" ]] || SOURCE_WORKTREE_CLEAN=false
+  require_exact_source_state "${SOURCE_COMMIT}" "${SOURCE_TREE}" \
+    "${source_commit}" "${source_tree}" "${worktree_state}" || return
   runtime_identity_publish_positive "${SOURCE_COMMIT}" "${SOURCE_TREE}" "${SOURCE_WORKTREE_CLEAN}" \
     "${POD_IMAGE_ID}" "${RUNNING_EXECUTABLE_SHA256}" "${HEALTH_RESPONSE}" \
     "${SELECTED_IPV4_PORT}" "${NAMESPACE_ABSENT}" deferred-to-verify-runtime
 }
 
+prove_source_state_guard() (
+  local commit_a commit_b status tree
+  commit_a="$(printf 'a%.0s' {1..40})"
+  commit_b="$(printf 'b%.0s' {1..40})"
+  tree="$(printf 'c%.0s' {1..40})"
+  require_exact_source_state "${commit_a}" "${tree}" "${commit_a}" "${tree}" ""
+  if require_exact_source_state "${commit_a}" "${tree}" \
+    "${commit_a}" "${tree}" ' M kubernetes/reference/server/main.go' >/dev/null 2>&1; then
+    printf 'FAIL  runtime-red   dirty source worktree was accepted\n' >&2
+    return 1
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] || return 1
+  if require_exact_source_state "${commit_a}" "${tree}" \
+    "${commit_b}" "${tree}" "" >/dev/null 2>&1; then
+    printf 'FAIL  runtime-red   changed source revision was accepted\n' >&2
+    return 1
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] || return 1
+  printf 'PASS  runtime-red   exact clean source revision guard proved\n'
+)
+
+prove_probe_cleanup_failure() (
+  local status
+  PORT_FORWARD_LOG_FILE=/tmp/flare-probe-cleanup-log
+  HEALTH_RESPONSE_FILE=/tmp/flare-probe-cleanup-health
+  IDENTITY_RESPONSE_FILE=/tmp/flare-probe-cleanup-identity
+  rm() { return 1; }
+  if remove_probe_files >/dev/null 2>&1; then
+    printf 'FAIL  runtime-red   probe-file cleanup failure was accepted\n' >&2
+    return 1
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 || -z "${PORT_FORWARD_LOG_FILE}" ||
+    -z "${HEALTH_RESPONSE_FILE}" || -z "${IDENTITY_RESPONSE_FILE}" ]]; then
+    printf 'FAIL  runtime-red   failed probe cleanup discarded retry state\n' >&2
+    return 1
+  fi
+  printf 'PASS  runtime-red   probe-file cleanup failure retained retry state\n'
+)
+
 main() {
   local status=0 cleanup_status=0
+  if [[ "${1:-}" == --self-check ]]; then
+    [[ $# -eq 1 ]] || return 2
+    prove_source_state_guard
+    prove_probe_cleanup_failure
+    return
+  fi
+  if (($#)); then
+    printf 'FAIL  kind-smoke    usage: smoke.sh [--self-check]\n' >&2
+    return 2
+  fi
   trap emergency_cleanup EXIT
-  capture_initial_source_state || status=$?
-  if ((status == 0)); then invalidate_positive_evidence || status=$?; fi
+  invalidate_positive_evidence || status=$?
+  if ((status == 0)); then capture_initial_source_state || status=$?; fi
   if ((status == 0)); then "${PLATFORM_ROOT}/tools/kubernetes/kind-up.sh" || status=$?; fi
   if ((status == 0)); then load_reference_image || status=$?; fi
   if ((status == 0)); then apply_reference || status=$?; fi
@@ -270,12 +353,12 @@ main() {
   delete_runtime_namespace || cleanup_status=$?
   if ((status == 0 && cleanup_status != 0)); then status="${cleanup_status}"; fi
   if ((status == 0)); then publish_runtime_evidence || status=$?; fi
-  trap - EXIT
   if ((status != 0)); then
     printf 'FAIL  kind-smoke    reference workload identity verification failed\n' >&2
     return "${status}"
   fi
   printf 'PASS  kind-smoke    build -> load -> rollout -> exact identity -> cleanup\n'
+  trap - EXIT
 }
 
 main "$@"
