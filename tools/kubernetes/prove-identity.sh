@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
+
+PROOF_DIRECTORY=""
+SHA_A="$(printf 'a%.0s' {1..64})"
+SHA_B="$(printf 'b%.0s' {1..64})"
+
+expect_identity_failure() {
+  local label="$1" expected_status="$2" expected_output="$3"
+  local output actual_status
+  shift 3
+  set +e
+  output="$("$@" 2>&1)"
+  actual_status=$?
+  set -e
+  if [[ "${actual_status}" -ne "${expected_status}" || "${output}" != "${expected_output}" ]]; then
+    printf 'FAIL  runtime-red   %s status=%s output=%q\n' \
+      "${label}" "${actual_status}" "${output}" >&2
+    return 1
+  fi
+  printf 'PASS  runtime-red   %s exact_status=%s\n' "${label}" "${actual_status}"
+}
+
+write_build_env_fixture() {
+  local target="$1"
+  {
+    printf 'SCHEMA=flare-platform-reference-build-v1\n'
+    printf 'HOST_BINARY_SHA256=%s\n' "${SHA_A}"
+    printf 'HOST_BINARY_SHA256_SECOND=%s\n' "${SHA_A}"
+    printf 'HOST_BINARY_REPRODUCIBLE=true\n'
+    printf 'HOST_BINARY_BYTES=7\n'
+    printf 'CONTEXT_MANIFEST_PATH=.platform/reference/context.manifest.tsv\n'
+    printf 'CONTEXT_MANIFEST_SHA256=%s\n' "$(printf 'c%.0s' {1..64})"
+    printf 'BUILD_CONTEXT_BYTES=20\n'
+    printf 'BUILD_CONTEXT_CANARY_EXCLUDED=true\n'
+    printf 'TEMP_IMAGE_TAG=flare-platform-reference:identity-first\n'
+    printf 'FINAL_IMAGE_TAG=%s\n' "${PLATFORM_IMAGE}"
+    printf 'DOCKER_CONFIG_ID_FIRST=sha256:%s\n' "$(printf 'd%.0s' {1..64})"
+    printf 'DOCKER_CONFIG_ID_SECOND=sha256:%s\n' "$(printf 'e%.0s' {1..64})"
+    printf 'DOCKER_CONFIG_IDENTICAL=false\n'
+    printf 'DOCKER_REPO_DIGESTS=\n'
+    printf 'DOCKER_IDENTITY_SEMANTICS=docker-config-digest\n'
+    printf 'BUILD_LOG_FIRST_PATH=.platform/reference/docker-build-first.log\n'
+    printf 'BUILD_LOG_FIRST_SHA256=%s\n' "$(printf 'f%.0s' {1..64})"
+    printf 'BUILD_LOG_FIRST_RESULT_CONFIG_ID=sha256:%s\n' "$(printf 'd%.0s' {1..64})"
+    printf 'BUILD_LOG_FIRST_CONTEXT_TRANSFER=20B\n'
+    printf 'BUILD_LOG_SECOND_PATH=.platform/reference/docker-build-second.log\n'
+    printf 'BUILD_LOG_SECOND_SHA256=%s\n' "$(printf '1%.0s' {1..64})"
+    printf 'BUILD_LOG_SECOND_RESULT_CONFIG_ID=sha256:%s\n' "$(printf 'e%.0s' {1..64})"
+    printf 'BUILD_LOG_SECOND_CONTEXT_TRANSFER=30B\n'
+  } >"${target}"
+}
+
+prove_identity_response_reds() {
+  local malformed="${PROOF_DIRECTORY}/malformed.response"
+  local nul_health="${PROOF_DIRECTORY}/nul.health"
+  local nul_identity="${PROOF_DIRECTORY}/nul.identity"
+  printf '%s\n' "${SHA_A^^}" >"${malformed}"
+  printf 'ok\0' >"${nul_health}"
+  printf '%s\0' "${SHA_A}" >"${nul_identity}"
+  expect_identity_failure mismatch "${RUNTIME_IDENTITY_MISMATCH_STATUS}" \
+    'FAIL  runtime-id    running binary SHA-256 mismatch' \
+    runtime_identity_compare "${SHA_A}" "${SHA_B}"
+  expect_identity_failure malformed-response "${RUNTIME_IDENTITY_MALFORMED_STATUS}" \
+    'FAIL  runtime-id    malformed identity response' \
+    runtime_identity_parse_response "${malformed}"
+  expect_identity_failure nul-health-terminator "${RUNTIME_IDENTITY_MALFORMED_STATUS}" \
+    'FAIL  runtime-id    malformed health response' \
+    runtime_identity_parse_health_response "${nul_health}"
+  expect_identity_failure nul-identity-terminator "${RUNTIME_IDENTITY_MALFORMED_STATUS}" \
+    'FAIL  runtime-id    malformed identity response' \
+    runtime_identity_parse_response "${nul_identity}"
+}
+
+prove_build_env_contract() {
+  local valid="${PROOF_DIRECTORY}/build.env"
+  local nul_key="${PROOF_DIRECTORY}/nul-key.env"
+  local unexpected="${PROOF_DIRECTORY}/unexpected.env"
+  local repo_digest="${PROOF_DIRECTORY}/repo-digest.env"
+  local canary="${PROOF_DIRECTORY}/canary.env"
+  local result_mismatch="${PROOF_DIRECTORY}/result-mismatch.env"
+  write_build_env_fixture "${valid}"
+  runtime_identity_load_build_env "${valid}"
+  {
+    printf 'SC\0HEMA=flare-platform-reference-build-v1\n'
+    tail -n +2 -- "${valid}"
+  } >"${nul_key}"
+  expect_identity_failure nul-build-key "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed build identity record' \
+    runtime_identity_load_build_env "${nul_key}"
+  sed 's/^SCHEMA=/UNEXPECTED_KEY=/' "${valid}" >"${unexpected}"
+  expect_identity_failure unexpected-build-key "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    unexpected build identity key: UNEXPECTED_KEY' \
+    runtime_identity_load_build_env "${unexpected}"
+  sed "s|^DOCKER_REPO_DIGESTS=$|DOCKER_REPO_DIGESTS=local@sha256:${SHA_B}|" \
+    "${valid}" >"${repo_digest}"
+  expect_identity_failure nonempty-repo-digests "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed local Docker identity semantics' \
+    runtime_identity_load_build_env "${repo_digest}"
+  sed 's/^BUILD_CONTEXT_CANARY_EXCLUDED=true$/BUILD_CONTEXT_CANARY_EXCLUDED=false/' \
+    "${valid}" >"${canary}"
+  expect_identity_failure context-canary "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed build-context boundary identity' \
+    runtime_identity_load_build_env "${canary}"
+  sed "s|^BUILD_LOG_FIRST_RESULT_CONFIG_ID=.*$|BUILD_LOG_FIRST_RESULT_CONFIG_ID=sha256:${SHA_B}|" \
+    "${valid}" >"${result_mismatch}"
+  expect_identity_failure result-inspect-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    Docker build result and inspect identity disagree' \
+    runtime_identity_load_build_env "${result_mismatch}"
+  runtime_identity_load_build_env "${valid}"
+}
+
+prove_reference_context_red() {
+  local output
+  output="$(bash "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" prove)" || return
+  if ! grep -Fqx 'PASS  reference-red unexpected-file' <<<"${output}"; then
+    printf 'FAIL  runtime-red   canonical unexpected-context RED was not proved\n' >&2
+    return 1
+  fi
+  printf 'PASS  runtime-red   canonical TSV context verifier exact RED\n'
+}
+
+prove_dynamic_port_contract() {
+  local log="${PROOF_DIRECTORY}/port-forward.log"
+  local selected fixed_port='180''80'
+  printf 'Forwarding from 127.0.0.1:43127 -> 8080\nHandling connection for 8080\n' >"${log}"
+  selected="$(runtime_identity_parse_port "${log}")"
+  if [[ "${selected}" != 43127 ]]; then
+    printf 'FAIL  runtime-id    selected dynamic port was not parsed exactly\n' >&2
+    return 1
+  fi
+  if grep -Fq "${fixed_port}" "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh" \
+    "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"; then
+    printf 'FAIL  runtime-id    fixed probe port survived in runtime consumer\n' >&2
+    return 1
+  fi
+  grep -Fq -- '--address=127.0.0.1' "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh"
+  grep -Fq -- 'service/platform-reference :8080' "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh"
+  printf 'PASS  runtime-id    dynamic IPv4 port selection and probe contract\n'
+}
+
+surviving_process_red_case() (
+  runtime_identity_process_or_group_exists() { return 0; }
+  runtime_identity_signal_group() { return 0; }
+  runtime_identity_wait_tracked() { return 0; }
+  runtime_identity_cleanup_pause() { :; }
+  runtime_identity_stop_tracked 424242
+)
+
+prove_process_survival_red() {
+  expect_identity_failure surviving-process "${RUNTIME_IDENTITY_PROCESS_STATUS}" \
+    'FAIL  runtime-id    port-forward process survived cleanup' \
+    surviving_process_red_case
+}
+
+force_cleanup_group() {
+  local pid="$1"
+  kill -KILL -- "-${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+prove_real_process_group_cleanup() (
+  local pid status attempt
+  local kill_sent=false
+  local ready="${PROOF_DIRECTORY}/term-resistant.ready"
+  runtime_identity_signal_group() {
+    local signal="$1" tracked="$2"
+    [[ "${signal}" != KILL ]] || kill_sent=true
+    kill -s "${signal}" -- "-${tracked}" 2>/dev/null
+  }
+  runtime_identity_begin_tracked_cleanup
+  set -m
+  (
+    set +m
+    # The ready path must expand inside the TERM-resistant fixture shell.
+    # shellcheck disable=SC2016
+    exec timeout --foreground --signal=TERM --kill-after=10s 20s \
+      bash -c 'trap "" TERM; : >"$1"; sleep 20 & wait' _ "${ready}"
+  ) >/dev/null 2>&1 &
+  pid=$!
+  set +m
+  for ((attempt = 1; attempt <= 50; attempt++)); do
+    [[ ! -f "${ready}" ]] || break
+    runtime_identity_process_or_group_exists "${pid}" || break
+    sleep 0.02
+  done
+  if [[ ! -f "${ready}" ]]; then
+    force_cleanup_group "${pid}"
+    printf 'FAIL  runtime-id    TERM-resistant cleanup fixture was not ready\n' >&2
+    return 1
+  fi
+  if runtime_identity_stop_tracked "${pid}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f -- "${ready}"
+  if ((status != 0)); then
+    force_cleanup_group "${pid}"
+    printf 'FAIL  runtime-id    real tracked cleanup failed status=%s\n' "${status}" >&2
+    return "${status}"
+  fi
+  if runtime_identity_process_or_group_exists "${pid}" ||
+    [[ "${RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP}" != absent || "${kill_sent}" != true ]]; then
+    force_cleanup_group "${pid}"
+    printf 'FAIL  runtime-id    real cleanup did not prove KILL and group absence\n' >&2
+    return 1
+  fi
+  printf 'PASS  runtime-id    TERM-resistant group reached KILL/reap and is absent\n'
+)
+
+assert_positive_key_set() {
+  local evidence="$1" keys="${PROOF_DIRECTORY}/positive.keys"
+  cut -d= -f1 "${evidence}" >"${keys}"
+  diff -u - "${keys}" <<'EOF'
+SCHEMA
+SOURCE_COMMIT
+SOURCE_TREE
+SOURCE_WORKTREE_CLEAN
+HOST_BINARY_SHA256
+HOST_BINARY_SHA256_SECOND
+HOST_BINARY_REPRODUCIBLE
+HOST_BINARY_BYTES
+CONTEXT_MANIFEST_PATH
+CONTEXT_MANIFEST_SHA256
+BUILD_CONTEXT_BYTES
+BUILD_CONTEXT_CANARY_EXCLUDED
+DOCKER_CONFIG_ID_FIRST
+DOCKER_CONFIG_ID_SECOND
+DOCKER_CONFIG_IDENTICAL
+DOCKER_REPO_DIGESTS
+DOCKER_IDENTITY_SEMANTICS
+BUILD_LOG_FIRST_SHA256
+BUILD_LOG_FIRST_RESULT_CONFIG_ID
+BUILD_LOG_FIRST_CONTEXT_TRANSFER
+BUILD_LOG_SECOND_SHA256
+BUILD_LOG_SECOND_RESULT_CONFIG_ID
+BUILD_LOG_SECOND_CONTEXT_TRANSFER
+POD_IMAGE_ID
+POD_IMAGE_ID_SEMANTICS
+DOCKER_VS_POD_COMPARABLE
+RUNNING_EXECUTABLE_SHA256
+HEALTH_RESPONSE
+SELECTED_IPV4_PORT
+PORT_FORWARD_CLEANUP
+PORT_FORWARD_PID_ABSENT
+NAMESPACE_ABSENT
+CLUSTER_CLEANUP
+EOF
+}
+
+prove_positive_rendering() {
+  local evidence="${PROOF_DIRECTORY}/positive.env"
+  local commit tree
+  commit="$(printf '2%.0s' {1..40})"
+  tree="$(printf '3%.0s' {1..40})"
+  runtime_identity_begin_tracked_cleanup
+  RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP=absent
+  runtime_identity_validate_positive_arguments "${commit}" "${tree}" false \
+    'containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    "${SHA_A}" ok 43127 true deferred-to-verify-runtime
+  runtime_identity_render_positive "${commit}" "${tree}" false \
+    'containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    "${SHA_A}" ok 43127 deferred-to-verify-runtime >"${evidence}"
+  assert_positive_key_set "${evidence}"
+  grep -Fqx 'SOURCE_WORKTREE_CLEAN=false' "${evidence}"
+  grep -Fqx 'BUILD_CONTEXT_BYTES=20' "${evidence}"
+  grep -Fqx 'BUILD_CONTEXT_CANARY_EXCLUDED=true' "${evidence}"
+  grep -Fqx 'DOCKER_REPO_DIGESTS=' "${evidence}"
+  grep -Fqx 'DOCKER_VS_POD_COMPARABLE=false' "${evidence}"
+  grep -Fqx "BUILD_LOG_FIRST_RESULT_CONFIG_ID=sha256:$(printf 'd%.0s' {1..64})" \
+    "${evidence}"
+  [[ "$(wc -c <"${evidence}")" -le 4096 ]]
+  printf 'PASS  runtime-id    bounded positive evidence carries exact identity semantics\n'
+}
+
+main() {
+  reset_state_directory runtime-identity-proof || return
+  PROOF_DIRECTORY="${PLATFORM_STATE_DIR}/runtime-identity-proof"
+  trap 'rm -rf -- "${PROOF_DIRECTORY}"' EXIT
+  prove_identity_response_reds
+  prove_build_env_contract
+  prove_reference_context_red
+  prove_dynamic_port_contract
+  prove_process_survival_red
+  prove_real_process_group_cleanup
+  prove_positive_rendering
+  trap - EXIT
+  rm -rf -- "${PROOF_DIRECTORY}"
+  printf 'PASS  runtime-id    pure runtime identity contracts proved\n'
+}
+
+main "$@"

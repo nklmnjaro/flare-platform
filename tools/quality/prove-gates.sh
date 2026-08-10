@@ -224,6 +224,9 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
+  "${PLATFORM_ROOT}/tools/kubernetes/prove-identity.sh"
+  "${PLATFORM_ROOT}/tools/kubernetes/identity-negative-smoke.sh" --self-check
+  "${PLATFORM_ROOT}/tools/kubernetes/negative-smoke.sh" --self-check
   prove_red_marker_guard
   expect_failure source-line-policy bash -c \
     'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-line.sh'

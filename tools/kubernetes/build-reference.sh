@@ -1,29 +1,294 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+# shellcheck source=../common/env.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || exit 1
+# shellcheck source=../common/tooling.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh" || exit 1
+# shellcheck source=runtime.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh" || exit 1
 
-main() {
-  local output
-  local binary_sha
-  require_tool go
-  require_tool docker
-  output="$(prepare_state_file "reference/server")" || return
+export LC_ALL=C
 
-  mkdir -p "$(dirname -- "${output}")"
-  rm -f "${output}"
-  (
-    cd "${PLATFORM_ROOT}/kubernetes/reference/server"
-    run_bounded 90s env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' -o "${output}" .
-  )
-  binary_sha="$(sha256sum "${output}" | cut -d ' ' -f 1)"
-  docker_command 120s build --network=none --pull=false \
-    --file "${PLATFORM_ROOT}/kubernetes/reference/Dockerfile" \
-    --tag "${PLATFORM_IMAGE}" "${PLATFORM_ROOT}"
-  printf 'PASS  image         %s binary_sha256=%s\n' "${PLATFORM_IMAGE}" "${binary_sha}"
+REFERENCE_ROOT="${PLATFORM_STATE_DIR}/reference"
+REFERENCE_CONTEXT="${REFERENCE_ROOT}/context"
+REFERENCE_MANIFEST="${REFERENCE_ROOT}/context.manifest.tsv"
+REFERENCE_CANARY_NAME="CONTEXT_CANARY_NOT_SENT"
+TEMP_IMAGE_TAG="flare-platform-reference:identity-first"
+MAX_BUILD_LOG_BYTES=131072
+BUILD_LOG_PATH=""
+BUILD_CONTEXT_TRANSFER=""
+BUILD_RESULT_CONFIG_ID=""
+
+hash_file() {
+  local path="$1"
+  local digest
+  digest="$(sha256sum -- "${path}" | awk '{print $1}')" || return
+  [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "${digest}" || return
 }
 
-main "$@"
+build_host_binary() {
+  local output="$1"
+  local cache_relative="$2"
+  local cache="${PLATFORM_STATE_DIR}/${cache_relative}"
+  reset_state_directory "${cache_relative}" || return
+  rm -f -- "${output}" || return
+  (
+    cd -- "${PLATFORM_ROOT}/kubernetes/reference/server" || exit 1
+    run_bounded 90s env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      GOCACHE="${cache}" GOTOOLCHAIN=local GOPROXY=off \
+      go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
+      -o "${output}" . || exit $?
+  ) || return
+  if [[ -L "${output}" || ! -f "${output}" || ! -x "${output}" ]]; then
+    printf 'FAIL  reference-build host output is not a regular executable\n' >&2 || return
+    return 1
+  fi
+}
+
+prove_host_binary_reproducibility() {
+  local first="$1"
+  local second="$2"
+  local first_sha second_sha
+  first_sha="$(hash_file "${first}")" || return
+  second_sha="$(hash_file "${second}")" || return
+  if ! cmp --silent -- "${first}" "${second}" || [[ "${first_sha}" != "${second_sha}" ]]; then
+    printf 'FAIL  reference-build fresh host binaries differ\n' >&2 || return
+    return 1
+  fi
+  HOST_BINARY_SHA256="${first_sha}"
+  HOST_BINARY_SHA256_SECOND="${second_sha}"
+  HOST_BINARY_BYTES="$(stat -c '%s' "${first}")" || return
+  printf 'PASS  reference-build reproducible_host_sha256=%s\n' "${first_sha}" || return
+}
+
+extract_context_transfer() {
+  local log="$1"
+  local transfer
+  transfer="$(sed -n 's/^.*transferring context: \([^[:space:]]*\).*$/\1/p' \
+    "${log}" | tail -n 1)" || return
+  if [[ ! "${transfer}" =~ ^[0-9]+([.][0-9]+)?[kMGT]?B$ ]]; then
+    printf 'FAIL  reference-build BuildKit context transfer evidence missing\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${transfer}" || return
+}
+
+extract_result_config_id() {
+  local log="$1"
+  local -a results=()
+  mapfile -t results < <(sed -nE \
+    's/^#[0-9]+ writing image (sha256:[0-9a-f]{64}) done$/\1/p' "${log}") || return
+  if [[ "${#results[@]}" -ne 1 ]]; then
+    printf 'FAIL  reference-build expected exactly one BuildKit result config identity\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${results[0]}" || return
+}
+
+capture_image_build() {
+  local tag="$1"
+  local log_relative="$2"
+  local log temporary size
+  local -a pipeline_status=()
+  log="$(prepare_state_file "${log_relative}")" || return
+  temporary="$(mktemp "${REFERENCE_ROOT}/.docker-build.XXXXXXXX")" || return
+  set +e
+  # This foreground pipeline waits for both sides. head closes at MAX+1, and
+  # run_bounded still provides a hard deadline if a producer ignores SIGPIPE.
+  run_bounded 180s env DOCKER_BUILDKIT=1 docker build \
+    --network=none --pull=false --no-cache --progress=plain \
+    --file "${REFERENCE_CONTEXT}/Dockerfile" --tag "${tag}" \
+    "${REFERENCE_CONTEXT}" 2>&1 | head -c "$((MAX_BUILD_LOG_BYTES + 1))" >"${temporary}"
+  pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  size="$(wc -c <"${temporary}")" || {
+    rm -f -- "${temporary}" || return
+    return 1
+  }
+  if [[ "${pipeline_status[1]}" -ne 0 || "${size}" -gt "${MAX_BUILD_LOG_BYTES}" ]]; then
+    rm -f -- "${temporary}" || return
+    printf 'FAIL  reference-build Docker build log exceeded its capture boundary\n' >&2 || return
+    return 1
+  fi
+  if [[ "${pipeline_status[0]}" -ne 0 ]]; then
+    sed -n '1,160p' "${temporary}" >&2 || return
+    rm -f -- "${temporary}" || return
+    printf 'FAIL  reference-build Docker build failed with status %s\n' \
+      "${pipeline_status[0]}" >&2 || return
+    return 1
+  fi
+  log="$(prepare_state_file "${log_relative}")" || {
+    rm -f -- "${temporary}" || return
+    return 1
+  }
+  if ! mv -fT -- "${temporary}" "${log}"; then
+    rm -f -- "${temporary}" || return
+    return 1
+  fi
+  BUILD_LOG_PATH="${log}"
+  BUILD_CONTEXT_TRANSFER="$(extract_context_transfer "${log}")" || return
+  BUILD_RESULT_CONFIG_ID="$(extract_result_config_id "${log}")" || return
+}
+
+require_result_matches_inspect() {
+  local label="$1" result_config_id="$2" inspect_config_id="$3"
+  if [[ "${result_config_id}" != "${inspect_config_id}" ]]; then
+    printf 'FAIL  reference-build %s BuildKit result differs from inspected config identity\n' \
+      "${label}" >&2 || return
+    return 1
+  fi
+}
+
+inspect_config_id() {
+  local tag="$1"
+  local identity
+  identity="$(docker_command 20s image inspect --format '{{.Id}}' "${tag}")" || return
+  if [[ ! "${identity}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf 'FAIL  reference-build malformed Docker config identity\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${identity}" || return
+}
+
+inspect_repo_digests() {
+  local tag="$1"
+  local digests
+  digests="$(docker_command 20s image inspect --format '{{join .RepoDigests ","}}' \
+    "${tag}")" || return
+  if [[ "${digests}" == *$'\n'* || "${digests}" == *$'\r'* || "${digests}" == *$'\t'* ]]; then
+    printf 'FAIL  reference-build malformed RepoDigests evidence\n' >&2 || return
+    return 1
+  fi
+  printf '%s\n' "${digests}" || return
+}
+
+measure_context_payload() {
+  local dockerfile_bytes server_bytes
+  dockerfile_bytes="$(stat -c '%s' "${REFERENCE_CONTEXT}/Dockerfile")" || return
+  server_bytes="$(stat -c '%s' "${REFERENCE_CONTEXT}/server")" || return
+  printf '%s\n' "$((dockerfile_bytes + server_bytes))" || return
+}
+
+prove_canary_exclusion() {
+  local grep_status
+  if [[ -e "${REFERENCE_CONTEXT}/${REFERENCE_CANARY_NAME}" ]]; then
+    printf 'FAIL  reference-build outside-context canary entered the context contract\n' >&2 || return
+    return 1
+  fi
+  if grep -Fq "${REFERENCE_CANARY_NAME}" "${REFERENCE_MANIFEST}"; then
+    printf 'FAIL  reference-build outside-context canary entered the context contract\n' >&2 || return
+    return 1
+  else
+    grep_status=$?
+  fi
+  if [[ "${grep_status}" -ne 1 ]]; then
+    printf 'FAIL  reference-build unable to inspect context manifest for canary\n' >&2 || return
+    return 1
+  fi
+  BUILD_CONTEXT_CANARY_EXCLUDED=true
+}
+
+write_build_environment() {
+  local target temporary
+  target="$(prepare_state_file "reference/build.env")" || return
+  temporary="$(mktemp "${REFERENCE_ROOT}/.build-env.XXXXXXXX")" || return
+  printf '%s\n' \
+    'SCHEMA=flare-platform-reference-build-v1' \
+    "HOST_BINARY_SHA256=${HOST_BINARY_SHA256}" \
+    "HOST_BINARY_SHA256_SECOND=${HOST_BINARY_SHA256_SECOND}" \
+    'HOST_BINARY_REPRODUCIBLE=true' \
+    "HOST_BINARY_BYTES=${HOST_BINARY_BYTES}" \
+    "BUILD_CONTEXT_BYTES=${BUILD_CONTEXT_BYTES}" \
+    "BUILD_CONTEXT_CANARY_EXCLUDED=${BUILD_CONTEXT_CANARY_EXCLUDED}" \
+    'CONTEXT_MANIFEST_PATH=.platform/reference/context.manifest.tsv' \
+    "CONTEXT_MANIFEST_SHA256=${CONTEXT_MANIFEST_SHA256}" \
+    "TEMP_IMAGE_TAG=${TEMP_IMAGE_TAG}" \
+    "FINAL_IMAGE_TAG=${PLATFORM_IMAGE}" \
+    "DOCKER_CONFIG_ID_FIRST=${DOCKER_CONFIG_ID_FIRST}" \
+    "DOCKER_CONFIG_ID_SECOND=${DOCKER_CONFIG_ID_SECOND}" \
+    "DOCKER_CONFIG_IDENTICAL=${DOCKER_CONFIG_IDENTICAL}" \
+    "DOCKER_REPO_DIGESTS=${DOCKER_REPO_DIGESTS}" \
+    'DOCKER_IDENTITY_SEMANTICS=docker-config-digest' \
+    'BUILD_LOG_FIRST_PATH=.platform/reference/docker-build-first.log' \
+    "BUILD_LOG_FIRST_SHA256=${BUILD_LOG_FIRST_SHA256}" \
+    "BUILD_LOG_FIRST_RESULT_CONFIG_ID=${BUILD_LOG_FIRST_RESULT_CONFIG_ID}" \
+    "BUILD_LOG_FIRST_CONTEXT_TRANSFER=${BUILD_LOG_FIRST_CONTEXT_TRANSFER}" \
+    'BUILD_LOG_SECOND_PATH=.platform/reference/docker-build-second.log' \
+    "BUILD_LOG_SECOND_SHA256=${BUILD_LOG_SECOND_SHA256}" \
+    "BUILD_LOG_SECOND_RESULT_CONFIG_ID=${BUILD_LOG_SECOND_RESULT_CONFIG_ID}" \
+    "BUILD_LOG_SECOND_CONTEXT_TRANSFER=${BUILD_LOG_SECOND_CONTEXT_TRANSFER}" \
+    >"${temporary}" || {
+    rm -f -- "${temporary}" || return
+    return 1
+  }
+  local environment_bytes
+  environment_bytes="$(wc -c <"${temporary}")" || {
+    rm -f -- "${temporary}" || return
+    return 1
+  }
+  if [[ "${environment_bytes}" -gt 8192 ]]; then
+    rm -f -- "${temporary}" || return
+    printf 'FAIL  reference-build build.env exceeded 8192 bytes\n' >&2 || return
+    return 1
+  fi
+  target="$(prepare_state_file "reference/build.env")" || {
+    rm -f -- "${temporary}" || return
+    return 1
+  }
+  if ! mv -fT -- "${temporary}" "${target}"; then
+    rm -f -- "${temporary}" || return
+    return 1
+  fi
+}
+
+main() {
+  local canary first_binary second_binary
+  require_tool go || return
+  require_tool docker || return
+  reset_state_directory "reference" || return
+  canary="$(prepare_state_file "reference/${REFERENCE_CANARY_NAME}")" || return
+  printf 'this file must remain outside the Docker build context\n' >"${canary}" || return
+  first_binary="$(prepare_state_file "reference/server-first")" || return
+  second_binary="$(prepare_state_file "reference/server-second")" || return
+  build_host_binary "${first_binary}" "reference/go-cache-first" || return
+  build_host_binary "${second_binary}" "reference/go-cache-second" || return
+  prove_host_binary_reproducibility "${first_binary}" "${second_binary}" || return
+  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" stage "${first_binary}" || return
+  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" verify || return
+  prove_canary_exclusion || return
+  BUILD_CONTEXT_BYTES="$(measure_context_payload)" || return
+  CONTEXT_MANIFEST_SHA256="$(hash_file "${REFERENCE_MANIFEST}")" || return
+
+  capture_image_build "${TEMP_IMAGE_TAG}" "reference/docker-build-first.log" || return
+  BUILD_LOG_FIRST_SHA256="$(hash_file "${BUILD_LOG_PATH}")" || return
+  BUILD_LOG_FIRST_CONTEXT_TRANSFER="${BUILD_CONTEXT_TRANSFER}"
+  BUILD_LOG_FIRST_RESULT_CONFIG_ID="${BUILD_RESULT_CONFIG_ID}"
+  DOCKER_CONFIG_ID_FIRST="$(inspect_config_id "${TEMP_IMAGE_TAG}")" || return
+  require_result_matches_inspect first "${BUILD_LOG_FIRST_RESULT_CONFIG_ID}" \
+    "${DOCKER_CONFIG_ID_FIRST}" || return
+
+  "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh" verify || return
+  capture_image_build "${PLATFORM_IMAGE}" "reference/docker-build-second.log" || return
+  BUILD_LOG_SECOND_SHA256="$(hash_file "${BUILD_LOG_PATH}")" || return
+  BUILD_LOG_SECOND_CONTEXT_TRANSFER="${BUILD_CONTEXT_TRANSFER}"
+  BUILD_LOG_SECOND_RESULT_CONFIG_ID="${BUILD_RESULT_CONFIG_ID}"
+  DOCKER_CONFIG_ID_SECOND="$(inspect_config_id "${PLATFORM_IMAGE}")" || return
+  require_result_matches_inspect second "${BUILD_LOG_SECOND_RESULT_CONFIG_ID}" \
+    "${DOCKER_CONFIG_ID_SECOND}" || return
+  DOCKER_REPO_DIGESTS="$(inspect_repo_digests "${PLATFORM_IMAGE}")" || return
+  if [[ "${DOCKER_CONFIG_ID_FIRST}" == "${DOCKER_CONFIG_ID_SECOND}" ]]; then
+    DOCKER_CONFIG_IDENTICAL=true
+  else
+    DOCKER_CONFIG_IDENTICAL=false
+  fi
+  write_build_environment || return
+  docker_command 20s image rm "${TEMP_IMAGE_TAG}" >/dev/null || return
+  printf 'PASS  image         %s binary_sha256=%s config_identical=%s\n' \
+    "${PLATFORM_IMAGE}" "${HOST_BINARY_SHA256}" "${DOCKER_CONFIG_IDENTICAL}" || return
+  printf 'INFO  image         context_transfer_first=%s context_transfer_second=%s\n' \
+    "${BUILD_LOG_FIRST_CONTEXT_TRANSFER}" "${BUILD_LOG_SECOND_CONTEXT_TRANSFER}" || return
+}
+
+main "$@" || exit $?
