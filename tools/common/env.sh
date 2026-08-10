@@ -15,7 +15,10 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
 assert_existing_state_directory "aqua/bin" || {
   return 1 2>/dev/null || exit 1
 }
-export PATH="${AQUA_ROOT_DIR}/bin:${PATH}"
+assert_existing_state_directory "bootstrap" || {
+  return 1 2>/dev/null || exit 1
+}
+export PATH="${AQUA_ROOT_DIR}/bin:${PLATFORM_STATE_DIR}/bootstrap:${PATH}"
 
 PLATFORM_CLUSTER_NAME="flare-platform-dev"
 PLATFORM_CONTEXT="kind-${PLATFORM_CLUSTER_NAME}"

@@ -55,11 +55,32 @@ prove_success() {
   printf 'PASS  tool-lock-green checksum lock committed atomically\n'
 }
 
+prove_proxy_resolution() {
+  local target="$1"
+  mkdir -p "${target}/tools/common" "${target}/.platform/bootstrap" \
+    "${target}/.platform/aqua/bin"
+  cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
+  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
+  printf '#!/usr/bin/env bash\nprintf "proxy-ok\\n"\n' \
+    >"${target}/.platform/bootstrap/aqua"
+  printf '#!/usr/bin/env bash\naqua fixture\n' \
+    >"${target}/.platform/aqua/bin/kind"
+  chmod +x "${target}/.platform/bootstrap/aqua" \
+    "${target}/.platform/aqua/bin/kind"
+  (
+    cd "${target}"
+    source tools/common/env.sh
+    [[ "$(kind)" == proxy-ok ]]
+  )
+  printf 'PASS  aqua-proxy    bootstrap Aqua resolves project tool proxies\n'
+}
+
 main() {
   WORK_DIR="$(mktemp -d)"
   trap 'rm -rf "${WORK_DIR}"' EXIT
   prove_rollback "${WORK_DIR}/rollback"
   prove_success "${WORK_DIR}/success"
+  prove_proxy_resolution "${WORK_DIR}/proxy"
 }
 
 main "$@"
