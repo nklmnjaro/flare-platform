@@ -39,7 +39,6 @@ prove_home_path_rejection() {
   printf 'PASS  artifact-red  workstation home path rejected at CLI boundary\n'
 }
 
-
 stage_repository_source() {
   local destination="$1"
   local raw_list selected_list path status=0

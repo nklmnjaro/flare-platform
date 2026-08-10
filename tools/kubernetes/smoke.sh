@@ -5,12 +5,18 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 PORT_FORWARD_PID=""
+PROBE_RESPONSE_FILE=""
 
 stop_probe() {
-  [[ -z "${PORT_FORWARD_PID}" ]] && return 0
-  kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-  wait "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-  PORT_FORWARD_PID=""
+  if [[ -n "${PORT_FORWARD_PID}" ]]; then
+    kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
+    wait "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
+    PORT_FORWARD_PID=""
+  fi
+  if [[ -n "${PROBE_RESPONSE_FILE}" ]]; then
+    rm -f -- "${PROBE_RESPONSE_FILE}"
+    PROBE_RESPONSE_FILE=""
+  fi
 }
 
 emergency_cleanup() {
@@ -39,7 +45,9 @@ apply_reference() {
 probe() {
   local attempt
   local port_forward_log
+  local response
   port_forward_log="$(prepare_state_file "port-forward.log")" || return
+  PROBE_RESPONSE_FILE="$(mktemp "${PLATFORM_STATE_DIR}/.health-response.XXXXXXXX")" || return
   timeout --signal=TERM --kill-after=5s 35s kubectl \
     --request-timeout=0 port-forward \
     -n "${PLATFORM_NAMESPACE}" service/platform-reference 18080:8080 \
@@ -48,8 +56,12 @@ probe() {
 
   for ((attempt = 1; attempt <= 20; attempt++)); do
     kill -0 "${PORT_FORWARD_PID}" >/dev/null 2>&1 || break
-    if curl --fail --silent --show-error --max-time 2 \
-      http://127.0.0.1:18080/healthz | grep -Fxq ok; then
+    if curl --fail --silent --show-error --max-time 2 --max-filesize 16 \
+      --output "${PROBE_RESPONSE_FILE}" http://127.0.0.1:18080/healthz &&
+      [[ "$(wc -c <"${PROBE_RESPONSE_FILE}")" -eq 3 ]] &&
+      [[ "$(wc -l <"${PROBE_RESPONSE_FILE}")" -eq 1 ]] &&
+      IFS= read -r response <"${PROBE_RESPONSE_FILE}" && [[ "${response}" == ok ]]; then
+      printf 'INFO  kind-smoke    health_response="%s" terminator=LF\n' "${response}"
       stop_probe
       return 0
     fi

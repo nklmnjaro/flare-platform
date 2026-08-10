@@ -2,11 +2,23 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 emergency_teardown() {
   local status=$?
   "${PLATFORM_ROOT}/tools/kubernetes/kind-down.sh" --if-present >/dev/null 2>&1 || true
   return "${status}"
+}
+
+prove_cluster_absent() {
+  local phase="$1"
+  local presence
+  presence="$(cluster_presence)" || return
+  if [[ "${presence}" != absent ]]; then
+    printf 'FAIL  verify-runtime cluster_%s=%s\n' "${phase}" "${presence}" >&2
+    return 1
+  fi
+  printf 'PASS  verify-runtime cluster_%s=absent\n' "${phase}"
 }
 
 main() {
@@ -19,6 +31,9 @@ main() {
     "${PLATFORM_ROOT}/tools/kubernetes/negative-smoke.sh" || status=1
   fi
   "${PLATFORM_ROOT}/tools/kubernetes/kind-down.sh" --if-present || status=1
+  prove_cluster_absent after_final_teardown || status=1
+  "${PLATFORM_ROOT}/tools/kubernetes/kind-down.sh" --if-present || status=1
+  prove_cluster_absent after_idempotent_teardown || status=1
   trap - EXIT
   [[ "${status}" == 0 ]] || return 1
   printf 'PASS  verify-runtime disposable cluster lifecycle proved\n'

@@ -88,6 +88,8 @@ prove_execution_path_symlink_rejected() {
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
   ln -s "${outside}" "${target}/.platform/aqua"
+  # The positional argument expands in the fixture shell.
+  # shellcheck disable=SC2016
   if env PATH="${BASE_PATH}" bash -c \
     'if source "$1"; then exit 0; fi; exit 1' _ \
     "${target}/tools/common/env.sh" >"${log}" 2>&1; then
@@ -124,7 +126,6 @@ prove_status_file_symlink_rejected() {
   grep -Fqx outside-sentinel "${sentinel}"
 }
 
-
 prove_reset_symlink_rejected() {
   local state="${WORK_DIR}/reset/.platform"
   local outside="${WORK_DIR}/reset-outside"
@@ -139,7 +140,6 @@ prove_reset_symlink_rejected() {
   grep -Fqx outside-sentinel "${outside}/sentinel.txt"
   printf 'PASS  state-red      symlinked reset target preserved external data\n'
 }
-
 
 prove_reset_failure_propagates() {
   local state="${WORK_DIR}/reset-failure/.platform"

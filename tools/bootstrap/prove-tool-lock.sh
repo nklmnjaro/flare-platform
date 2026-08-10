@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || exit 1
 
 WORK_DIR=""
 
@@ -18,6 +18,138 @@ case "\$1" in
 esac
 FAKE
   chmod +x "${target}"
+}
+
+write_marker_aqua() {
+  local target="$1"
+  cat >"${target}" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'executed\n' >"${AQUA_RED_MARKER:?}"
+case "${1:-}" in
+  version) printf '2.62.3\n' ;;
+  *) exit 0 ;;
+esac
+FAKE
+  chmod +x "${target}"
+}
+
+prepare_bootstrap_fixture() {
+  local target="$1"
+  mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
+    "${target}/.platform/bootstrap" "${target}/fake-bin"
+  cp "${PLATFORM_ROOT}/aqua.yaml" "${target}/aqua.yaml"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
+    "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${target}/tools/bootstrap/"
+  cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
+  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
+  cat >"${target}/fake-bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${AQUA_CURL_MARKER:-}" ]]; then
+  printf 'invoked\n' >"${AQUA_CURL_MARKER}"
+fi
+printf 'fixture curl denied\n' >&2
+exit 70
+FAKE
+  chmod +x "${target}/fake-bin/curl"
+}
+
+prove_unique_checksum_policy() {
+  local target="$1"
+  local marker="${target}/.platform/CURL_INVOKED"
+  local output="${target}/bootstrap.out"
+  prepare_bootstrap_fixture "${target}"
+  if (
+    cd "${target}"
+    env CI=true AQUA_CURL_MARKER="${marker}" \
+      PATH="${target}/fake-bin:${PATH}" tools/bootstrap/bootstrap.sh
+  ) >"${output}" 2>&1; then
+    printf 'FAIL  aqua-ci-lock  fixture download unexpectedly passed\n' >&2
+    return 1
+  fi
+  grep -Fq 'verified Aqua download failed' "${output}"
+  grep -Fqx invoked "${marker}"
+  printf 'PASS  aqua-ci-lock  unique require_checksum true reached install\n'
+}
+
+prove_duplicate_checksum_policy() {
+  local target="$1"
+  local marker="${target}/.platform/CURL_INVOKED"
+  local output="${target}/bootstrap.out"
+  local duplicate="${target}/aqua.duplicate.yaml"
+  prepare_bootstrap_fixture "${target}"
+  sed '/^  require_checksum: true$/a\  require_checksum: false' \
+    "${target}/aqua.yaml" >"${duplicate}"
+  mv "${duplicate}" "${target}/aqua.yaml"
+  [[ "$(grep -Ec '^[[:space:]]*require_checksum[[:space:]]*:' \
+    "${target}/aqua.yaml")" == "2" ]]
+  if (
+    cd "${target}"
+    env CI=true AQUA_CURL_MARKER="${marker}" \
+      PATH="${target}/fake-bin:${PATH}" tools/bootstrap/bootstrap.sh
+  ) >"${output}" 2>&1; then
+    printf 'FAIL  aqua-ci-red   duplicate checksum policy unexpectedly passed\n' >&2
+    return 1
+  fi
+  grep -Fq 'CI requires committed Aqua checksums.' "${output}"
+  grep -Fq 'Expected exactly one require_checksum: true setting.' "${output}"
+  if [[ -e "${marker}" ]]; then
+    printf 'FAIL  aqua-ci-red   duplicate policy reached the network\n' >&2
+    return 1
+  fi
+  printf 'PASS  aqua-ci-red   mixed duplicate rejected before network\n'
+}
+
+expect_cached_aqua_rejection() {
+  local target="$1"
+  local expected="$2"
+  local marker="${target}/.platform/FAKE_AQUA_EXECUTED"
+  local output="${target}/bootstrap.out"
+  if (
+    cd "${target}"
+    env AQUA_RED_MARKER="${marker}" PATH="${target}/fake-bin:${PATH}" \
+      tools/bootstrap/bootstrap.sh
+  ) >"${output}" 2>&1; then
+    printf 'FAIL  aqua-cache-red unsafe cached candidate unexpectedly passed\n' >&2
+    return 1
+  fi
+  grep -Fq "${expected}" "${output}"
+  if [[ -e "${marker}" ]]; then
+    printf 'FAIL  aqua-cache-red unsafe cached candidate was executed\n' >&2
+    return 1
+  fi
+}
+
+prove_fake_cached_aqua() {
+  local target="$1"
+  prepare_bootstrap_fixture "${target}"
+  write_marker_aqua "${target}/.platform/bootstrap/aqua"
+  cp "${target}/.platform/bootstrap/aqua" "${target}/aqua.before"
+  expect_cached_aqua_rejection "${target}" 'cached Aqua integrity rejected'
+  cmp "${target}/aqua.before" "${target}/.platform/bootstrap/aqua"
+  [[ -z "$(find "${target}/.platform/bootstrap" -maxdepth 1 \
+    -name '.aqua-install.*' -print -quit)" ]]
+  printf 'PASS  aqua-cache-red fake version-compatible binary was never executed\n'
+}
+
+prove_symlink_cached_aqua() {
+  local target="$1"
+  prepare_bootstrap_fixture "${target}"
+  write_marker_aqua "${target}/.platform/hostile-aqua"
+  ln -s ../hostile-aqua "${target}/.platform/bootstrap/aqua"
+  expect_cached_aqua_rejection "${target}" 'cached Aqua candidate is a symlink'
+  printf 'PASS  aqua-cache-red symlink candidate was never executed\n'
+}
+
+prove_nonregular_cached_aqua() {
+  local target="$1"
+  prepare_bootstrap_fixture "${target}"
+  mkdir "${target}/.platform/bootstrap/aqua"
+  write_marker_aqua "${target}/.platform/bootstrap/aqua/version"
+  expect_cached_aqua_rejection "${target}" \
+    'cached Aqua candidate is not a regular file'
+  printf 'PASS  aqua-cache-red non-regular candidate was never executed\n'
 }
 
 prepare_fixture() {
@@ -78,6 +210,11 @@ prove_proxy_resolution() {
 main() {
   WORK_DIR="$(mktemp -d)"
   trap 'rm -rf "${WORK_DIR}"' EXIT
+  prove_unique_checksum_policy "${WORK_DIR}/unique-checksum"
+  prove_duplicate_checksum_policy "${WORK_DIR}/duplicate-checksum"
+  prove_fake_cached_aqua "${WORK_DIR}/fake-cache"
+  prove_symlink_cached_aqua "${WORK_DIR}/symlink-cache"
+  prove_nonregular_cached_aqua "${WORK_DIR}/nonregular-cache"
   prove_rollback "${WORK_DIR}/rollback"
   prove_success "${WORK_DIR}/success"
   prove_proxy_resolution "${WORK_DIR}/proxy"

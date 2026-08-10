@@ -4,6 +4,8 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
+STARTUP_MARKER="intentional startup failure requested"
+
 emergency_cleanup() {
   local status=$?
   if [[ -f "${KUBECONFIG}" ]]; then
@@ -20,13 +22,18 @@ load_reference_image() {
 
 observe_expected_failure() {
   local attempt
+  local line
   local output
   for ((attempt = 1; attempt <= 20; attempt++)); do
     output="$(kubectl_command 10s -n "${PLATFORM_NAMESPACE}" \
       logs deployment/platform-reference --all-pods=true --tail=40 2>/dev/null || true)"
-    if grep -Fq 'intentional startup failure requested' <<<"${output}"; then
-      return 0
-    fi
+    while IFS= read -r line; do
+      if [[ "${line}" == "${STARTUP_MARKER}" ||
+        "${line}" == *" ${STARTUP_MARKER}" ]]; then
+        printf 'INFO  kind-negative startup_marker="%s"\n' "${STARTUP_MARKER}"
+        return 0
+      fi
+    done <<<"${output}"
     sleep 1
   done
   return 1
@@ -52,7 +59,7 @@ diagnostics_are_bounded() {
       return 1
     fi
   done
-  if ! grep -Fq 'intentional startup failure requested' "${target}/logs.txt"; then
+  if ! grep -Fq "${STARTUP_MARKER}" "${target}/logs.txt"; then
     printf 'FAIL  diagnostics   expected startup marker is absent from evidence\n' >&2
     return 1
   fi

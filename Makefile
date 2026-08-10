@@ -54,16 +54,29 @@ prove-gates:
 prove-integrity:
 	@tools/artifacts/prove-integrity.sh
 
+artifact-pack: export ARTIFACT_SOURCE = $(SOURCE)
+artifact-pack: export ARTIFACT_OUTPUT = $(OUTPUT)
 artifact-pack:
-	@test -n "$(SOURCE)" || { echo 'SOURCE is required' >&2; exit 2; }
-	@test -n "$(OUTPUT)" || { echo 'OUTPUT is required' >&2; exit 2; }
-	@cd tools/artifacts/archive && go run . pack \
-	  --source "$(abspath $(SOURCE))" --output "$(abspath $(OUTPUT))"
+	@test -n "$${ARTIFACT_SOURCE}" || { echo 'SOURCE is required' >&2; exit 2; }
+	@test -n "$${ARTIFACT_OUTPUT}" || { echo 'OUTPUT is required' >&2; exit 2; }
+	@set -euo pipefail; \
+	  invocation_root="$$(pwd -P)"; \
+	  source_path="$${ARTIFACT_SOURCE}"; \
+	  output_path="$${ARTIFACT_OUTPUT}"; \
+	  [[ "$${source_path}" == /* ]] || source_path="$${invocation_root}/$${source_path}"; \
+	  [[ "$${output_path}" == /* ]] || output_path="$${invocation_root}/$${output_path}"; \
+	  cd -- tools/artifacts/archive; \
+	  go run . pack --source "$${source_path}" --output "$${output_path}"
 
+artifact-verify: export ARTIFACT_ARCHIVE = $(ARCHIVE)
 artifact-verify:
-	@test -n "$(ARCHIVE)" || { echo 'ARCHIVE is required' >&2; exit 2; }
-	@cd tools/artifacts/archive && go run . verify \
-	  --archive "$(abspath $(ARCHIVE))"
+	@test -n "$${ARTIFACT_ARCHIVE}" || { echo 'ARCHIVE is required' >&2; exit 2; }
+	@set -euo pipefail; \
+	  invocation_root="$$(pwd -P)"; \
+	  archive_path="$${ARTIFACT_ARCHIVE}"; \
+	  [[ "$${archive_path}" == /* ]] || archive_path="$${invocation_root}/$${archive_path}"; \
+	  cd -- tools/artifacts/archive; \
+	  go run . verify --archive "$${archive_path}"
 
 verify: check prove-gates verify-runtime
 

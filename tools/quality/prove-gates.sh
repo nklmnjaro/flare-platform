@@ -62,25 +62,167 @@ prove_unlocked_ci() {
     "${directory}/tools/bootstrap/bootstrap.sh"
 }
 
-prove_red_marker_guard() {
+expect_helper_status() {
+  local label="$1" expected="$2" status
+  shift 2
+  if "$@" >/dev/null 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne "${expected}" ]]; then
+    printf 'FAIL  red-marker    %s returned %s, expected %s\n' \
+      "${label}" "${status}" "${expected}" >&2
+    return 1
+  fi
+}
+
+assert_evidence_hygiene() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
-  if expect_failure_with_marker marker-guard 7 expected-marker 5s \
-    bash -c 'printf "unrelated-output\n"; exit 7' >/dev/null 2>&1; then
-    printf 'FAIL  red-marker    missing marker was accepted\n' >&2
+  local file size
+  if find "${evidence_dir}" -maxdepth 1 \
+    \( -name '.*.raw' -o -name '.*.render.*' -o -name '.*.bound.*' -o \
+    -name '.*.status.*' \) \
+    -print -quit | grep -q .; then
+    printf 'FAIL  red-marker    transient evidence file survived\n' >&2
     return 1
   fi
-  if expect_failure_with_marker status-guard 7 expected-marker 5s \
-    bash -c 'printf "expected-marker\n"; exit 8' >/dev/null 2>&1; then
-    printf 'FAIL  red-marker    wrong exit status was accepted\n' >&2
-    return 1
-  fi
+  while IFS= read -r file; do
+    size="$(wc -c <"${file}")"
+    if ((size > EVIDENCE_MAX_FILE_BYTES)); then
+      printf 'FAIL  red-marker    oversized durable evidence: %s\n' "${file}" >&2
+      return 1
+    fi
+  done < <(find "${evidence_dir}" -maxdepth 1 -type f -name '*.txt' -print)
+}
+
+prove_marker_semantics() {
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  expect_helper_status missing-marker "${EVIDENCE_MISSING_MARKER}" \
+    expect_failure_with_marker marker-guard 7 expected-marker 5s \
+    bash -c 'printf "unrelated-output\n"; exit 7'
+  expect_helper_status wrong-status "${EVIDENCE_WRONG_STATUS}" \
+    expect_failure_with_marker status-guard 7 expected-marker 5s \
+    bash -c 'printf "expected-marker\n"; exit 8'
   grep -Fqx 'actual_status=7' "${evidence_dir}/marker-guard.txt"
+  grep -Fqx 'marker_observed=false' "${evidence_dir}/marker-guard.txt"
   grep -Fqx 'actual_status=8' "${evidence_dir}/status-guard.txt"
-  printf 'PASS  red-marker    wrong reason and status fail closed\n'
+  grep -Fqx 'marker_observed=true' "${evidence_dir}/status-guard.txt"
+}
+
+prove_literal_redaction() {
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  local special_root='/tmp/flare #review[1]&repo'
+  local supported_home='/ho''me/review-user'
+  # The positional argument expands in the fixture shell.
+  # shellcheck disable=SC2016
+  PLATFORM_ROOT="${special_root}" expect_failure_with_marker special-path 7 marker 5s \
+    bash -c 'printf "%s marker\n" "$1"; exit 7' _ "${special_root}"
+  grep -Fq '<REPO> marker' "${evidence_dir}/special-path.txt"
+  if grep -Fq "${special_root}" "${evidence_dir}/special-path.txt"; then
+    printf 'FAIL  red-marker    special repository path was retained\n' >&2
+    return 1
+  fi
+  (
+    export HOME="${supported_home}"
+    # The positional argument expands in the fixture shell.
+    # shellcheck disable=SC2016
+    expect_failure_with_marker home-redaction 7 marker 5s \
+      bash -c 'printf "%s/.cache/tool marker\n" "$1"; exit 7' _ "${supported_home}"
+  )
+  grep -Fq '<HOME>/.cache/tool marker' "${evidence_dir}/home-redaction.txt"
+  if grep -Fq "${supported_home}" "${evidence_dir}/home-redaction.txt"; then
+    printf 'FAIL  red-marker    supported home path was retained\n' >&2
+    return 1
+  fi
+}
+
+run_forced_renderer_failure() {
+  PLATFORM_TEST_FORCE_EVIDENCE_RENDER_FAILURE=true \
+    expect_failure_with_marker renderer-failure 7 marker 5s \
+    bash -c 'printf "marker\n"; exit 7'
+}
+
+prove_renderer_and_size_bounds() {
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  local saved_output="${evidence_dir}/renderer-failure.txt"
+  printf 'retained-final\n' >"${saved_output}"
+  expect_helper_status renderer-failure "${EVIDENCE_BOUNDARY_STATUS}" \
+    run_forced_renderer_failure
+  grep -Fqx retained-final "${saved_output}"
+  expect_failure_with_marker oversized-output 124 oversize-marker 1s \
+    bash -c 'while :; do printf "oversize-marker\n"; done'
+  grep -Fqx 'raw_truncated=true' "${evidence_dir}/oversized-output.txt"
+  [[ "$(wc -c <"${evidence_dir}/oversized-output.txt")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
+}
+
+prove_inherited_stdout_cleanup() {
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  local pid_file child_pid="" start elapsed proof_status=0
+  pid_file="$(mktemp "${evidence_dir}/.inherited-child.XXXXXXXX")" || return
+  start="${SECONDS}"
+  # The child PID expands in the fixture shell.
+  # shellcheck disable=SC2016
+  expect_failure_with_marker inherited-stdout 7 inherited-marker 2s \
+    bash -c 'set -euo pipefail
+      sleep 6 &
+      printf "%s\n" "$!" >"$1"
+      printf "inherited-marker\n"
+      exit 7' _ "${pid_file}" || proof_status=$?
+  elapsed=$((SECONDS - start))
+  if ! IFS= read -r child_pid <"${pid_file}" || [[ ! "${child_pid}" =~ ^[0-9]+$ ]]; then
+    printf 'FAIL  red-marker    inherited-output child PID was not captured\n' >&2
+    proof_status=1
+  elif kill -0 "${child_pid}" 2>/dev/null; then
+    kill -KILL "${child_pid}" 2>/dev/null || true
+    printf 'FAIL  red-marker    inherited-output child survived capture\n' >&2
+    proof_status=1
+  fi
+  rm -f -- "${pid_file}" || proof_status=1
+  if ((elapsed > 3)); then
+    printf 'FAIL  red-marker    inherited-output capture exceeded overall bound\n' >&2
+    proof_status=1
+  fi
+  grep -Fqx 'actual_status=7' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
+  grep -Fqx 'marker_observed=true' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
+  [[ "${proof_status}" -eq 0 ]] || return 1
+  printf 'PASS  red-marker    inherited-output child killed without status drift\n'
+}
+
+prove_evidence_symlink_guards() {
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  local raw_sentinel="${evidence_dir}/raw-sentinel"
+  local final_sentinel="${evidence_dir}/final-sentinel"
+  printf 'raw-safe\n' >"${raw_sentinel}"
+  ln -s raw-sentinel "${evidence_dir}/.raw-symlink.raw"
+  expect_helper_status raw-symlink "${EVIDENCE_BOUNDARY_STATUS}" \
+    expect_failure_with_marker raw-symlink 7 marker 5s \
+    bash -c 'printf "marker\n"; exit 7'
+  grep -Fqx raw-safe "${raw_sentinel}"
+  rm -f "${evidence_dir}/.raw-symlink.raw"
+  printf 'final-safe\n' >"${final_sentinel}"
+  ln -s final-sentinel "${evidence_dir}/final-symlink.txt"
+  expect_helper_status final-symlink "${EVIDENCE_BOUNDARY_STATUS}" \
+    expect_failure_with_marker final-symlink 7 marker 5s \
+    bash -c 'printf "marker\n"; exit 7'
+  grep -Fqx final-safe "${final_sentinel}"
+  rm -f "${evidence_dir}/final-symlink.txt"
+}
+
+prove_red_marker_guard() {
+  reset_state_directory "gate-evidence" || return
+  prove_marker_semantics
+  prove_literal_redaction
+  prove_renderer_and_size_bounds
+  prove_inherited_stdout_cleanup
+  prove_evidence_symlink_guards
+  assert_evidence_hygiene
+  printf 'PASS  red-marker    rendering, reason, status, and bounds fail closed\n'
 }
 
 prove_local_gates() {
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
+  "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
   prove_red_marker_guard
   expect_failure source-line-policy bash -c \
@@ -117,15 +259,26 @@ prove_external_gates() {
   expect_failure_with_marker actionlint 1 '[syntax-check]' 30s \
     actionlint tests/fixtures/github/invalid.yml
   expect_failure_with_marker workflow-security 14 \
-    'error[dangerous-triggers]' 30s zizmor tests/fixtures/github/unsafe.yml
+    'error[dangerous-triggers]' 30s zizmor --offline \
+    tests/fixtures/github/unsafe.yml
   expect_failure_with_marker dockerfile 1 DL3007 30s \
     hadolint tests/fixtures/docker/Dockerfile
   expect_failure_with_marker secret-scan 1 \
     'CRITICAL: AWS (aws-access-key-id)' 60s \
     trivy fs --scanners secret --exit-code 1 tests/fixtures/secrets
+  reset_state_directory "kubeconform" || return
   expect_failure_with_marker kube-schema 1 \
     'got string, want null or integer' 30s \
-    kubeconform -strict tests/fixtures/kubernetes/invalid-schema.yaml
+    kubeconform -cache "${PLATFORM_STATE_DIR}/kubeconform" \
+    -kubernetes-version "${PLATFORM_KUBERNETES_SCHEMA_VERSION}" \
+    -strict tests/fixtures/kubernetes/invalid-schema.yaml
+  grep -Fq "/v${PLATFORM_KUBERNETES_SCHEMA_VERSION}-standalone-strict/" \
+    "${PLATFORM_STATE_DIR}/gate-evidence/kube-schema.txt"
+  if grep -Fq '/master-standalone-strict/' \
+    "${PLATFORM_STATE_DIR}/gate-evidence/kube-schema.txt"; then
+    printf 'FAIL  kube-schema   floating master schema identity retained\n' >&2
+    return 1
+  fi
   expect_failure_with_marker kube-security 1 \
     '(check: privileged-container' 30s \
     kube-linter lint tests/fixtures/kubernetes/security-defect.yaml

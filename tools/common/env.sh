@@ -10,12 +10,17 @@ export KUBECONFIG="${PLATFORM_STATE_DIR}/kubeconfig"
 export PLATFORM_DIAGNOSTICS_DIR="${PLATFORM_STATE_DIR}/diagnostics/raw"
 export TRIVY_CACHE_DIR="${PLATFORM_STATE_DIR}/trivy"
 export TRIVY_NO_PROGRESS=true
+export PLATFORM_KUBERNETES_SCHEMA_VERSION="1.36.1"
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
 assert_existing_state_directory "aqua/bin" || {
+  # The exit is the executed-script fallback.
+  # shellcheck disable=SC2317
   return 1 2>/dev/null || exit 1
 }
 assert_existing_state_directory "bootstrap" || {
+  # The exit is the executed-script fallback.
+  # shellcheck disable=SC2317
   return 1 2>/dev/null || exit 1
 }
 export PATH="${AQUA_ROOT_DIR}/bin:${PLATFORM_STATE_DIR}/bootstrap:${PATH}"

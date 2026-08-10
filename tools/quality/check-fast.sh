@@ -54,11 +54,16 @@ main() {
   mapfile -t shell_files < <(collect_shell_files)
   if ((${#shell_files[@]})); then
     shellcheck -x -P SCRIPTDIR "${shell_files[@]}"
+    printf 'PASS  shellcheck    tracked shell targets accepted\n'
     shfmt -d -i 2 -ci "${shell_files[@]}"
+    printf 'PASS  shell-format  tracked shell targets accepted\n'
   fi
   check_gofmt
+  printf 'PASS  go-checks     tests, source policy, and formatting accepted\n'
   actionlint .github/workflows/*.yml
-  zizmor .github/workflows
+  printf 'PASS  actionlint    workflow syntax accepted\n'
+  zizmor --offline .github/workflows
+  printf 'PASS  zizmor        offline workflow security checks accepted\n'
   printf 'PASS  check-fast    cheap static checks\n'
 }
 
