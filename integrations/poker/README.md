@@ -1,21 +1,47 @@
-# Poker onboarding contract
+# Poker как внешний design partner Flare
 
-Poker is the first external design partner/reference workload, but this repository does not yet contain
-an authoritative Poker repository or runtime contract. Platform foundation work continues without
-inventing Poker-specific behavior.
+Poker не является workload, который команда Flare должна собирать или разворачивать. Poker-команда самостоятельно
+разворачивает Flare в своём окружении и использует его в реальной тестовой работе.
 
-Before an executable deployment guide is produced, Poker/Sergey needs to provide or authorize access to:
+Сергей пишет Poker autotests под review владельца тестов. Flare Platform:
 
-- exact repository identity and revision/branch policy;
-- canonical local build, test, check, and run commands;
-- produced artifact or image contract;
-- service ports and health/readiness behavior;
-- configuration schema and required environment variables;
-- secret **names/interfaces only**, never secret values in documentation;
-- persistence/database dependencies, if any;
-- expected local and target deployment topology;
-- rollback and cleanup expectations.
+- не владеет Poker autotests;
+- не меняет Poker ради удобства Flare;
+- не добавляет poker-specific logic в Flare core;
+- предоставляет воспроизводимый Flare self-deployment path;
+- собирает эксплуатационную и продуктовую обратную связь;
+- принимает bounded support evidence для диагностики самого Flare.
 
-Once these inputs exist, Platform will turn them into a bounded self-deployment path that Sergey can run
-without internal Flare-team intervention. Assisted steps must remain explicitly marked `ASSISTED` until
-self-deployment succeeds independently.
+## Что требуется от Poker до executable deployment guide
+
+Нужен не Poker build/runtime contract, а authoritative consumer-environment contract:
+
+- target topology: local machine, VM или Kubernetes;
+- OS/architecture и доступные CPU/memory/storage limits;
+- Docker/Kubernetes versions и operator permissions;
+- network, proxy, firewall, TLS/CA и registry reachability;
+- ingress/port/DNS interface без secret values;
+- поддерживаемый способ передачи secrets;
+- persistence/backup facilities, которые Poker готов предоставить Flare;
+- правила хранения и удаления test logs/attachments;
+- endpoint/auth interface, через который Poker autotests отправляют данные во Flare;
+- maintenance window для upgrade/rollback;
+- способ передать bounded redacted diagnostics команде Flare.
+
+Точные values остаются вне публичной документации, если они sensitive. Platform документирует имена, форматы и checks.
+
+## Customer readiness
+
+Deployment считается `CUSTOMER_READY` только после независимого выполнения Сергеем или другим Poker operator:
+
+1. prerequisites/doctor;
+2. deploy exact Flare artifact digest;
+3. health verification;
+4. отправка минимального тестового события через поддерживаемый interface;
+5. просмотр результата в Flare;
+6. сбор bounded diagnostics при controlled failure;
+7. upgrade на новый digest;
+8. rollback на предыдущий digest;
+9. uninstall/offboarding с проверкой cleanup.
+
+Assisted run отмечается `ASSISTED` и не выдаётся за self-deployment.
