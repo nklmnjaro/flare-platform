@@ -53,7 +53,7 @@ main() {
   check_source_policy
   mapfile -t shell_files < <(collect_shell_files)
   if ((${#shell_files[@]})); then
-    shellcheck "${shell_files[@]}"
+    shellcheck -x -P SCRIPTDIR "${shell_files[@]}"
     shfmt -d -i 2 -ci "${shell_files[@]}"
   fi
   check_gofmt

@@ -26,6 +26,15 @@ spec:
         - name: reference
           image: flare-platform-reference:dev
           imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 1
           env:
             - name: PLATFORM_FAIL_STARTUP
               value: "1"
