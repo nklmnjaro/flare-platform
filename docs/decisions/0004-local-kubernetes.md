@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: integrated and clean live replay proven at `42e877c`
+Status: runtime executable identity proven at `568b395`
 
 ## Decision
 
@@ -27,6 +27,14 @@ the in-cluster ownership ConfigMap.
   and does not confuse an API failure with absence;
 - positive smoke proves build, local image load, rollout, HTTP health, and
   cleanup;
+- positive smoke also requires the running server to return the exact SHA-256
+  of its own executable, and rejects a changed mutable tag at the load boundary;
+- a separate live RED loads image A, builds different image B under the same
+  local tag without loading B, and requires the running A executable to be
+  rejected against the expected B SHA-256;
+- port-forward selects an ephemeral IPv4 loopback port, tracks its process
+  group, and proves that group absent; the stale RED additionally proves its
+  selected port is unreachable afterward;
 - negative smoke is accepted only after the expected startup-failure marker is
   observed, then captures stream-bounded diagnostics and proves cleanup;
 - runtime verification performs an explicit final cluster teardown whose
@@ -41,10 +49,20 @@ provenance before using raw kind cleanup, as documented in the runbook.
 ## Reference fixture
 
 The fixture is a standard-library Go HTTP server built with no third-party
-module, `CGO_ENABLED=0`, `-buildvcs=false`, `-trimpath`, and an empty build ID. Two local builds
-produce identical bytes. The binary is copied into `scratch`, runs as UID/GID
-65532, receives no service-account token, has no added Linux capabilities, and
-uses bounded resources plus readiness/liveness probes.
+module, `CGO_ENABLED=0`, `-buildvcs=false`, `-trimpath`, and an empty build ID.
+Two fresh host builds must produce identical bytes. At startup the server hashes
+the file resolved by `os.Executable`; `/identity` returns exactly the resulting
+64 lowercase hexadecimal characters followed by LF. The binary is copied into
+`scratch`, runs as UID/GID 65532, receives no service-account token, has no added
+Linux capabilities, and uses bounded resources plus readiness/liveness probes.
+
+Docker receives a generated build context containing exactly two regular files:
+`Dockerfile` and `server`. A canonical manifest outside that context binds their
+paths, modes, sizes, and SHA-256 values, and an adjacent canary proves that the
+context boundary excludes unrelated repository content. BuildKit result IDs are
+bound to immediate `docker inspect` results. Local Docker config digests and the
+CRI-reported Pod image identity are retained with explicit, non-comparable
+semantics; neither substitutes for the running executable hash.
 
 The kind node image is pinned by tag and digest. The fixture image is built
 locally with Docker build networking disabled and loaded directly into kind;
@@ -75,6 +93,14 @@ The current disposition is recorded in
 `docs/evidence/PLATFORM-PROMOTION-CLOSURE-002__20260810.md`. Historical evidence
 remains unchanged and continues to describe the environment in which it was
 captured.
+
+The runtime-identity implementation at
+`568b395d50b4fe4971b7f86c63b6b242ee781444` completed a clean live replay on
+2026-08-11. Its stale same-tag RED, exact positive executable identity, startup
+failure, namespace cleanup, and repeated cluster teardown are recorded in
+`docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`. That record
+supersedes only the runtime-identity boundary; it does not rewrite the earlier
+promotion evidence.
 
 ## Non-goals
 

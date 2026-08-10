@@ -11,9 +11,21 @@ Run `make doctor`, `make bootstrap`, and the checksum-lock sequence described in
 make verify-runtime
 ```
 
-This creates or safely reuses only `flare-platform-dev`, runs the positive and
-negative Platform fixture journeys, proves namespace cleanup, and deletes the
-owned cluster.
+This creates or safely reuses only `flare-platform-dev` and runs, in order:
+
+1. pure response, context, evidence, and process-cleanup RED proofs;
+2. a live stale same-tag RED that loads image A, builds but does not load B,
+   and rejects running executable A against expected SHA-256 B;
+3. the positive build, load, rollout, exact health, and executable-identity
+   journey;
+4. the intentional startup-failure and bounded-diagnostics journey;
+5. final deletion, an independent absence query, a second idempotent deletion,
+   and another absence query.
+
+The command publishes `.platform/runtime-identity/evidence.env` only after all
+three journeys, every journey's namespace removal, port-forward cleanup, and
+both cluster absence checks succeed. The file is generated evidence and should
+not be committed.
 
 Individual boundaries are available for diagnosis:
 
@@ -32,6 +44,13 @@ The runtime also refuses symlinked `.platform` components, kubeconfig outputs,
 reference binaries, port-forward logs, and diagnostic reset targets. A guard
 failure is not evidence that the cluster is absent; restore a real local state
 path and let the ownership checks determine whether deletion is allowed.
+
+The positive probe uses an ephemeral IPv4 loopback port; there is no fixed
+`18080` allocation to reserve. It checks exact `ok` plus LF and an exact
+65-byte lowercase SHA-256 response. The recorded Docker config digest and Pod
+CRI `imageID` intentionally use different identity domains and are marked
+non-comparable. The authoritative content bridge is equality between the fresh
+host binary SHA-256 and the value computed by the running executable itself.
 
 ## Failure evidence
 

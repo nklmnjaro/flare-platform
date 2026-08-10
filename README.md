@@ -60,7 +60,11 @@ make kind-down
 All Kubernetes commands use `.platform/kubeconfig`, require the exact context
 `kind-flare-platform-dev`, and prove ownership before reuse or deletion. Runtime
 operations and diagnostics are bounded; unsafe kubeconfig output paths are
-rejected before writes; namespace and cluster absence are explicitly verified. See `docs/runbooks/local-kubernetes.md`.
+rejected before writes; namespace and cluster absence are explicitly verified.
+The reference server reports the SHA-256 of its own running executable, and the
+runtime proof rejects loaded image A when same-tag expectation B differs before
+running the positive and startup-failure journeys. See `docs/runbooks/local-kubernetes.md`
+and `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
 
 ## Gate enforcement
 
