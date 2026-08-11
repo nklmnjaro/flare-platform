@@ -113,13 +113,15 @@ build_host_binary() {
   local cache_relative="$2"
   local source_directory="$3"
   local cache="${PLATFORM_STATE_DIR}/${cache_relative}"
+  local go_path
+  go_path="$(managed_tool_path go)" || return
   reset_state_directory "${cache_relative}" || return
   rm -f -- "${output}" || return
   (
     cd -- "${source_directory}" || exit 1
     run_bounded 90s env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       GOCACHE="${cache}" GOTOOLCHAIN=local GOPROXY=off \
-      go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
+      "${go_path}" build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
       -o "${output}" . || exit $?
   ) || return
   if [[ -L "${output}" || ! -f "${output}" || ! -x "${output}" ]]; then

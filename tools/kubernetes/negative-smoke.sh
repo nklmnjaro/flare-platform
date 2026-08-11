@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 STARTUP_MARKER="intentional startup failure requested"

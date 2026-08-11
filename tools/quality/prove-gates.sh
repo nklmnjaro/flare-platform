@@ -231,18 +231,17 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/kubernetes/identity-negative-smoke.sh" --self-check
   "${PLATFORM_ROOT}/tools/kubernetes/negative-smoke.sh" --self-check
   prove_red_marker_guard
-  expect_failure source-line-policy bash -c \
-    'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-line.sh'
-  expect_failure source-function-policy bash -c \
-    'cd tools/quality/policycheck && go run . -path ../../../tests/fixtures/policy/long-function.sh'
-  # The command must expand inside the fixture shell.
-  # shellcheck disable=SC2016
-  expect_failure go-format bash -c \
-    '[[ -z "$(gofmt -d tests/fixtures/go/unformatted.go)" ]]'
+  expect_failure source-line-policy run_managed_tool go run \
+    ./tools/quality/policycheck -path tests/fixtures/policy/long-line.sh
+  expect_failure source-function-policy run_managed_tool go run \
+    ./tools/quality/policycheck -path tests/fixtures/policy/long-function.sh
+  expect_failure go-format run_managed_tool gofmt -d \
+    tests/fixtures/go/unformatted.go
   expect_failure doctor-boundary env PLATFORM_TEST_FORCE_MISSING=curl \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only
   prove_unlocked_ci
   "${PLATFORM_ROOT}/tools/bootstrap/prove-tool-lock.sh"
+  "${PLATFORM_ROOT}/tools/common/prove-managed-tools.sh"
   expect_failure kube-context env PLATFORM_TEST_CURRENT_CONTEXT=kind-unrelated \
     "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh"
   "${PLATFORM_ROOT}/tools/kubernetes/prove-safety.sh"
@@ -258,24 +257,31 @@ require_external_tools() {
 
 prove_external_gates() {
   expect_failure_with_marker shellcheck 1 SC1046 30s \
-    shellcheck tests/fixtures/shell/invalid.sh
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" shellcheck \
+    tests/fixtures/shell/invalid.sh
   expect_failure_with_marker shell-format 1 \
     '+if true; then echo unformatted; fi' 30s \
-    shfmt -d -i 2 -ci tests/fixtures/shell/unformatted.sh
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" shfmt -d -i 2 -ci \
+    tests/fixtures/shell/unformatted.sh
   expect_failure_with_marker actionlint 1 '[syntax-check]' 30s \
-    actionlint tests/fixtures/github/invalid.yml
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" actionlint \
+    tests/fixtures/github/invalid.yml
   expect_failure_with_marker workflow-security 14 \
-    'error[dangerous-triggers]' 30s zizmor --offline \
+    'error[dangerous-triggers]' 30s \
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" zizmor --offline \
     tests/fixtures/github/unsafe.yml
   expect_failure_with_marker dockerfile 1 DL3007 30s \
-    hadolint tests/fixtures/docker/Dockerfile
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" hadolint \
+    tests/fixtures/docker/Dockerfile
   expect_failure_with_marker secret-scan 1 \
     'CRITICAL: AWS (aws-access-key-id)' 60s \
-    trivy fs --scanners secret --exit-code 1 tests/fixtures/secrets
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" trivy fs \
+    --scanners secret --exit-code 1 tests/fixtures/secrets
   reset_state_directory "kubeconform" || return
   expect_failure_with_marker kube-schema 1 \
     'got string, want null or integer' 30s \
-    kubeconform -cache "${PLATFORM_STATE_DIR}/kubeconform" \
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" kubeconform \
+    -cache "${PLATFORM_STATE_DIR}/kubeconform" \
     -kubernetes-version "${PLATFORM_KUBERNETES_SCHEMA_VERSION}" \
     -strict tests/fixtures/kubernetes/invalid-schema.yaml
   grep -Fq "/v${PLATFORM_KUBERNETES_SCHEMA_VERSION}-standalone-strict/" \
@@ -287,7 +293,8 @@ prove_external_gates() {
   fi
   expect_failure_with_marker kube-security 1 \
     '(check: privileged-container' 30s \
-    kube-linter lint tests/fixtures/kubernetes/security-defect.yaml
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" kube-linter lint \
+    tests/fixtures/kubernetes/security-defect.yaml
 }
 
 main() {

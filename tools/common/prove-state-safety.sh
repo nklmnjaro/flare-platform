@@ -8,10 +8,14 @@ BASE_PATH="/usr/bin:/bin"
 
 copy_diagnostics_fixture() {
   local target="$1"
-  mkdir -p "${target}/tools/common" "${target}/tools/diagnostics" \
-    "${target}/tools/kubernetes"
+  mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
+    "${target}/tools/diagnostics" "${target}/tools/kubernetes"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${target}/tools/bootstrap/aqua-trust.sh"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
+  cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
+    "${target}/tools/common/tooling.sh"
   cp "${PLATFORM_ROOT}/tools/diagnostics/collect.sh" \
     "${target}/tools/diagnostics/collect.sh"
   cp "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh" \

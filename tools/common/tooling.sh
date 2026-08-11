@@ -2,15 +2,109 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../bootstrap/aqua-trust.sh"
 
 EVIDENCE_BOUNDARY_STATUS=70
 EVIDENCE_WRONG_STATUS=71
 EVIDENCE_MISSING_MARKER=72
 EVIDENCE_MAX_FILE_BYTES=32768
 EVIDENCE_MAX_RAW_BYTES=65536
+MANAGED_TOOL_PATH=""
+PROJECT_AQUA_VERIFIED=false
+
+is_managed_tool() {
+  case "$1" in
+    go | gofmt | kind | kubectl | shellcheck | shfmt | actionlint | zizmor | \
+      hadolint | trivy | kubeconform | kube-linter | prek)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_tool_failure() {
+  local command_name="$1"
+  printf 'FAIL  tooling       project-managed toolchain unavailable or untrusted: %s; run make bootstrap\n' \
+    "${command_name}" >&2
+  return 1
+}
+
+resolve_managed_tool() {
+  local command_name="$1"
+  local candidate proxy resolved root symlink_target
+  is_managed_tool "${command_name}" || {
+    printf 'FAIL  tooling       %s is not an Aqua-managed command\n' \
+      "${command_name}" >&2
+    return 2
+  }
+  if [[ "${PROJECT_AQUA_VERIFIED}" != true ]]; then
+    if ! verify_existing_aqua tooling >/dev/null 2>&1; then
+      managed_tool_failure "${command_name}"
+      return
+    fi
+    PROJECT_AQUA_VERIFIED=true
+  fi
+  if ! assert_existing_state_directory "aqua/bin"; then
+    managed_tool_failure "${command_name}"
+    return
+  fi
+  candidate="${AQUA_ROOT_DIR}/bin/${command_name}"
+  proxy="${AQUA_ROOT_DIR}/aqua-proxy"
+  if [[ ! -L "${candidate}" || ! -L "${proxy}" ||
+    ! -f "${candidate}" || ! -x "${candidate}" ]]; then
+    managed_tool_failure "${command_name}"
+    return
+  fi
+  symlink_target="$({
+    readlink -n -- "${candidate}" && printf '\036'
+  })" || {
+    managed_tool_failure "${command_name}"
+    return
+  }
+  if [[ "${symlink_target}" != "../aqua-proxy"$'\036' ]]; then
+    managed_tool_failure "${command_name}"
+    return
+  fi
+  root="$(readlink -f -- "${AQUA_ROOT_DIR}")" || {
+    managed_tool_failure "${command_name}"
+    return
+  }
+  resolved="$(readlink -f -- "${candidate}")" || {
+    managed_tool_failure "${command_name}"
+    return
+  }
+  case "${resolved}" in
+    "${root}"/*) ;;
+    *)
+      managed_tool_failure "${command_name}"
+      return
+      ;;
+  esac
+  if [[ ! "${candidate}" -ef "${proxy}" ]]; then
+    managed_tool_failure "${command_name}"
+    return
+  fi
+  MANAGED_TOOL_PATH="${candidate}"
+}
+
+managed_tool_path() {
+  resolve_managed_tool "$1" || return
+  printf '%s\n' "${MANAGED_TOOL_PATH}"
+}
+
+run_managed_tool() {
+  local command_name="$1"
+  shift
+  resolve_managed_tool "${command_name}" || return
+  "${MANAGED_TOOL_PATH}" "$@"
+}
 
 require_tool() {
   local command_name="$1"
+  if is_managed_tool "${command_name}"; then
+    resolve_managed_tool "${command_name}" >/dev/null
+    return
+  fi
   if command -v "${command_name}" >/dev/null 2>&1; then
     return 0
   fi

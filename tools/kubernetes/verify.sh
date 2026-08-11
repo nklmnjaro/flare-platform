@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 
 emergency_teardown() {
@@ -24,6 +25,8 @@ prove_cluster_absent() {
 main() {
   local status=0
   local final_cluster_state=unknown repeated_cluster_state=unknown
+  require_tool kind
+  require_tool kubectl
   reset_state_directory "diagnostics/raw" || return
   reset_state_directory "runtime-identity" || return
   trap emergency_teardown EXIT

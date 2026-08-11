@@ -28,7 +28,7 @@ main() {
     return 2
   fi
 
-  if ! command -v kind >/dev/null 2>&1; then
+  if ! require_tool kind >/dev/null 2>&1; then
     if [[ "${if_present}" == true && ! -e "${KUBECONFIG}" && ! -L "${KUBECONFIG}" ]]; then
       printf 'PASS  kind-down     no local cluster state; no mutation attempted\n'
       return 0

@@ -8,20 +8,33 @@ WORK_DIR=""
 copy_runtime_files() {
   local target="$1"
   local script
-  mkdir -p "${target}/tools/common" "${target}/tools/kubernetes" \
-    "${target}/.platform/aqua/bin"
+  mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
+    "${target}/tools/kubernetes" "${target}/.platform/bootstrap" \
+    "${target}/.platform/aqua/bin" "${target}/.platform/aqua/test-fixtures"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${target}/tools/bootstrap/aqua-trust.sh"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
-  cp "${PLATFORM_ROOT}/tools/common/tooling.sh" "${target}/tools/common/tooling.sh"
+  cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
+    "${target}/tools/common/tooling-production.sh"
+  cp "${PLATFORM_ROOT}/tools/kubernetes/managed-tool-fixture.sh" \
+    "${target}/tools/common/tooling.sh"
+  cp "${PLATFORM_STATE_DIR}/bootstrap/aqua" \
+    "${target}/.platform/bootstrap/aqua"
   for script in runtime guard-context guard-ownership kind-up kind-down delete-namespace diagnostics; do
     cp "${PLATFORM_ROOT}/tools/kubernetes/${script}.sh" \
       "${target}/tools/kubernetes/${script}.sh"
   done
 }
 
+publish_managed_mock() {
+  local target="$1" command_name="$2"
+  chmod 0755 "${target}/.platform/aqua/test-fixtures/${command_name}"
+}
+
 write_kind_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kind" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kind" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 cluster_state() {
@@ -70,7 +83,7 @@ case "${1:-} ${2:-}" in
   *) exit 2 ;;
 esac
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kind"
+  publish_managed_mock "${target}" kind
 }
 
 write_docker_mock() {
@@ -85,7 +98,7 @@ MOCK
 
 write_ownership_kubectl_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kubectl" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 arguments="$*"
@@ -99,12 +112,12 @@ else
   exit 2
 fi
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 write_create_kubectl_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kubectl" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 arguments="$*"
@@ -122,7 +135,7 @@ else
   exit 2
 fi
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 prove_post_create_failure_is_cleaned() {
@@ -184,7 +197,7 @@ prove_unowned_cluster_is_not_deleted() {
 
 write_owned_kubectl_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kubectl" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 arguments="$*"
@@ -198,7 +211,7 @@ else
   exit 2
 fi
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 prove_owned_cluster_is_deleted() {
@@ -233,7 +246,7 @@ prove_absent_destroy_is_idempotent() {
 
 write_namespace_kubectl_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kubectl" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 arguments="$*"
@@ -251,7 +264,7 @@ else
   exit 2
 fi
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 prove_namespace_cleanup() {
@@ -303,7 +316,7 @@ prove_kubeconfig_symlink_is_rejected() {
 
 write_noisy_kubectl_mock() {
   local target="$1"
-  cat >"${target}/.platform/aqua/bin/kubectl" <<'MOCK'
+  cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == *"config current-context"* ]]; then
@@ -312,7 +325,7 @@ else
   head -c 200000 /dev/zero | tr '\0' x
 fi
 MOCK
-  chmod +x "${target}/.platform/aqua/bin/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 prove_diagnostics_are_bounded() {

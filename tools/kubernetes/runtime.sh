@@ -10,13 +10,17 @@ run_bounded() {
 kind_command() {
   local duration="$1"
   shift
-  run_bounded "${duration}" kind "$@"
+  local command_path
+  command_path="$(managed_tool_path kind)" || return
+  run_bounded "${duration}" "${command_path}" "$@"
 }
 
 kubectl_command() {
   local duration="$1"
   shift
-  run_bounded "${duration}" kubectl --request-timeout=10s "$@"
+  local command_path
+  command_path="$(managed_tool_path kubectl)" || return
+  run_bounded "${duration}" "${command_path}" --request-timeout=10s "$@"
 }
 
 docker_command() {

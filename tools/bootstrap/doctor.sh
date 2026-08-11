@@ -35,7 +35,7 @@ check_docker() {
 main() {
   local failed=0
   local command_name
-  local base=(awk bash curl cut find git grep gzip head make mktemp sed sha256sum sort tar timeout tr uname wc)
+  local base=(awk bash curl cut find git grep gzip head make mktemp readlink sed sha256sum sort tar timeout tr uname wc)
 
   if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
     printf 'FAIL  platform     supported target is Linux x86_64\n' >&2

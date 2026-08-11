@@ -17,7 +17,7 @@ prove_home_path_rejection() {
   set +e
   (
     cd "${PLATFORM_ROOT}/tools/artifacts/archive"
-    go run . pack --source "${fixture}" --output "${output}"
+    run_managed_tool go run . pack --source "${fixture}" --output "${output}"
   ) >"${log}" 2>&1
   status=$?
   set -e
@@ -86,8 +86,8 @@ prove_repository_packability() {
   if ((status == 0)); then
     (
       cd "${PLATFORM_ROOT}/tools/artifacts/archive"
-      go run . pack --source "${stage}" --output "${output}" &&
-        go run . verify --archive "${output}"
+      run_managed_tool go run . pack --source "${stage}" --output "${output}" &&
+        run_managed_tool go run . verify --archive "${output}"
     ) >/dev/null || status=$?
   fi
   rm -rf -- "${stage}"
@@ -102,7 +102,7 @@ main() {
   require_tool go
   (
     cd "${PLATFORM_ROOT}/tools/artifacts/archive"
-    go test -count=1 -v ./...
+    run_managed_tool go test -count=1 -v ./...
   )
   prove_home_path_rejection
   prove_repository_packability

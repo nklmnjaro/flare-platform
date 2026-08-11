@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
 # This helper guards its CLI entry point and is safe to source.
@@ -320,7 +321,8 @@ apply_reference() {
 }
 
 start_dynamic_port_forward() {
-  local attempt pgid port
+  local attempt pgid port kubectl_path
+  kubectl_path="$(managed_tool_path kubectl)" || return
   PORT_FORWARD_LOG="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-port-forward.XXXXXXXX")" || return
   runtime_identity_begin_tracked_cleanup
   set -m
@@ -329,7 +331,7 @@ start_dynamic_port_forward() {
     ulimit -c 0 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -f 64 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     exec timeout --foreground --signal=TERM --kill-after=5s 35s \
-      kubectl --request-timeout=0 port-forward --address=127.0.0.1 \
+      "${kubectl_path}" --request-timeout=0 port-forward --address=127.0.0.1 \
       -n "${PLATFORM_NAMESPACE}" service/platform-reference :8080
   ) >"${PORT_FORWARD_LOG}" 2>&1 &
   PORT_FORWARD_PID=$!

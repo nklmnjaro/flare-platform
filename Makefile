@@ -66,7 +66,8 @@ artifact-pack:
 	  [[ "$${source_path}" == /* ]] || source_path="$${invocation_root}/$${source_path}"; \
 	  [[ "$${output_path}" == /* ]] || output_path="$${invocation_root}/$${output_path}"; \
 	  cd -- tools/artifacts/archive; \
-	  go run . pack --source "$${source_path}" --output "$${output_path}"
+	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . pack \
+	    --source "$${source_path}" --output "$${output_path}"
 
 artifact-verify: export ARTIFACT_ARCHIVE = $(ARCHIVE)
 artifact-verify:
@@ -76,7 +77,8 @@ artifact-verify:
 	  archive_path="$${ARTIFACT_ARCHIVE}"; \
 	  [[ "$${archive_path}" == /* ]] || archive_path="$${invocation_root}/$${archive_path}"; \
 	  cd -- tools/artifacts/archive; \
-	  go run . verify --archive "$${archive_path}"
+	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . verify \
+	    --archive "$${archive_path}"
 
 verify: check prove-gates verify-runtime
 
