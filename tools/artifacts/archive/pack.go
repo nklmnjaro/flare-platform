@@ -65,6 +65,9 @@ func collectEntries(root string, limits archiveLimits) ([]archiveEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("source directory contains no regular files")
+	}
 	sort.Slice(entries, func(left, right int) bool { return entries[left].name < entries[right].name })
 	return entries, nil
 }

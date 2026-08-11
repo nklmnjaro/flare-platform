@@ -67,6 +67,20 @@ func TestPackRejectsSymlinkSource(t *testing.T) {
 	}
 }
 
+func TestPackRejectsEmptySourceWithoutPublishing(t *testing.T) {
+	source := t.TempDir()
+	output := filepath.Join(t.TempDir(), "artifact.zip")
+	err := packDirectory(source, output)
+	if err == nil || !strings.Contains(err.Error(), "source directory contains no regular files") {
+		t.Fatalf("expected empty-source rejection, got %v", err)
+	}
+	for _, path := range []string{output, output + ".sha256"} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("rejected empty source published %s: %v", path, statErr)
+		}
+	}
+}
+
 func TestPackResolvesOutputParentBeforeBoundaryCheck(t *testing.T) {
 	source := fixtureDirectory(t, map[string]string{"payload.txt": "ok\n"})
 	inside := filepath.Join(source, "published")
