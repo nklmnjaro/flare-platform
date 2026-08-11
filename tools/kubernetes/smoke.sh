@@ -7,6 +7,7 @@ builtin source "${SMOKE_SOURCE_DIR}/../common/env.sh"
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh"
 unset SMOKE_SOURCE_DIR
 
 PORT_FORWARD_PID=""
@@ -68,11 +69,14 @@ stop_probe() {
 
 emergency_cleanup() {
   local original_status=$?
-  local cleanup_status=0
+  local cleanup_status=0 lease_status=0
+  lifecycle_lease_clear_interrupt_traps
   stop_probe || cleanup_status=$?
-  if [[ -f "${KUBECONFIG}" ]]; then
+  if [[ "${LIFECYCLE_LEASE_INTERRUPTED}" != true && -f "${KUBECONFIG}" ]]; then
     "${PLATFORM_ROOT}/tools/kubernetes/delete-namespace.sh" >/dev/null 2>&1 || cleanup_status=1
   fi
+  lifecycle_lease_release || lease_status=$?
+  ((cleanup_status != 0)) || cleanup_status="${lease_status}"
   if ((original_status != 0)); then
     return "${original_status}"
   fi
@@ -187,7 +191,7 @@ create_probe_files() {
 }
 
 start_port_forward() {
-  local status=0
+  local status=0 gate_deadline
   docker_target_ensure || return
   docker_target_assert_frozen || return
   runtime_identity_begin_tracked_cleanup
@@ -196,13 +200,17 @@ start_port_forward() {
     return
   set -m
   (
+    gate_deadline=$((SECONDS + 5))
     set +m
-    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do
+      ((SECONDS < gate_deadline)) || exit "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+      run_host_command sleep 0.02
+    done
     [[ "$(<"${PORT_FORWARD_START_GATE}")" == go ]] ||
       exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -c 0
     ulimit -f 64
-    run_managed_tool kubectl --request-timeout=0 \
+    exec_managed_tool_bounded 60s kubectl --request-timeout=0 \
       port-forward --address=127.0.0.1 \
       -n "${PLATFORM_NAMESPACE}" service/platform-reference :8080
   ) >>"${PORT_FORWARD_LOG_FILE}" 2>&1 &
@@ -452,8 +460,10 @@ main() {
     printf 'FAIL  kind-smoke    usage: smoke.sh [--self-check]\n' >&2
     return 2
   fi
-  docker_target_ensure || return
+  lifecycle_lease_acquire smoke || return
   trap emergency_cleanup EXIT
+  lifecycle_lease_install_interrupt_traps
+  docker_target_ensure || return
   invalidate_positive_evidence || status=$?
   if ((status == 0)); then capture_initial_source_state || status=$?; fi
   if ((status == 0)); then "${PLATFORM_ROOT}/tools/kubernetes/kind-up.sh" || status=$?; fi
@@ -475,7 +485,9 @@ main() {
     return "${status}"
   fi
   printf 'PASS  kind-smoke    build -> load -> rollout -> exact identity -> cleanup\n'
+  lifecycle_lease_release || return
   trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
 }
 
 main "$@"

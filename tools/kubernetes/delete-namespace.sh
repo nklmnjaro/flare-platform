@@ -5,7 +5,17 @@ DELETE_NAMESPACE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "${DELETE_NAMESPACE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
   DELETE_NAMESPACE_SOURCE_DIR=.
 builtin source "${DELETE_NAMESPACE_SOURCE_DIR}/ownership.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh"
 builtin unset DELETE_NAMESPACE_SOURCE_DIR
+
+cleanup_lifecycle_lease() {
+  local status=$? lease_status=0
+  trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
+  lifecycle_lease_release || lease_status=$?
+  ((status != 0)) || status="${lease_status}"
+  exit "${status}"
+}
 
 namespace_presence() {
   local output
@@ -28,6 +38,9 @@ main() {
   local deadline
   local presence
   local ownership_snapshot
+  lifecycle_lease_acquire delete-namespace || return
+  trap cleanup_lifecycle_lease EXIT
+  lifecycle_lease_install_interrupt_traps
   ownership_snapshot="$(ownership_current_checkout_snapshot)" || return
   presence="$(namespace_presence)" || return
   if [[ "${presence}" == absent ]]; then
@@ -43,6 +56,9 @@ main() {
     presence="$(namespace_presence)"
     if [[ "${presence}" == absent ]]; then
       printf 'PASS  namespace     %s removed\n' "${PLATFORM_NAMESPACE}"
+      lifecycle_lease_release || return
+      trap - EXIT
+      lifecycle_lease_clear_interrupt_traps
       return 0
     fi
     run_host_command sleep 1

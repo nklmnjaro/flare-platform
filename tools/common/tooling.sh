@@ -117,6 +117,20 @@ run_managed_tool_bounded() {
   run_project_aqua_command_bounded "${max_time}" "${command_name}" "$@"
 }
 
+# Replace the current isolated process-group leader with the bounded command.
+exec_managed_tool_bounded() {
+  local max_time="${1:-}" command_name="${2:-}"
+  (($# >= 2)) || {
+    builtin printf \
+      'FAIL  tooling       timeout and managed command are required\n' >&2
+    return "${HOST_COMMAND_USAGE_STATUS}"
+  }
+  shift 2
+  aqua_validate_bounded_duration "${max_time}" || return
+  resolve_managed_tool "${command_name}" || return
+  exec_project_aqua_command_bounded "${max_time}" "${command_name}" "$@"
+}
+
 require_tool() {
   local command_name="$1"
   if is_managed_tool "${command_name}"; then

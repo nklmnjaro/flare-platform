@@ -187,6 +187,26 @@ run_project_aqua_command_bounded() (
     "${duration}" "${AQUA_BIN}" exec -- "${command_name}" "$@"
 )
 
+# Tail-exec API for a caller that already owns an isolated process group.
+exec_project_aqua_command_bounded() {
+  builtin local duration="${1:-}" command_name="${2:-}"
+  (($# >= 2)) || {
+    builtin printf \
+      'FAIL  aqua-trust    timeout and managed command are required\n' >&2
+    builtin return "${HOST_COMMAND_USAGE_STATUS}"
+  }
+  builtin shift 2
+  aqua_validate_bounded_duration "${duration}" || builtin return
+  if [[ ! "${command_name}" =~ ^[a-z][a-z0-9-]{0,63}$ ]]; then
+    builtin printf 'FAIL  aqua-trust    unsafe managed command name: %q\n' \
+      "${command_name}" >&2
+    builtin return "${HOST_COMMAND_USAGE_STATUS}"
+  fi
+  aqua_prepare_normal_environment || builtin return
+  builtin exec "${AQUA_TRUST_TIMEOUT}" --signal=TERM --kill-after=2s \
+    "${duration}" "${AQUA_BIN}" exec -- "${command_name}" "$@"
+}
+
 run_project_aqua_observation_bounded() (
   builtin local duration="${1:-}" observation_root="${2:-}"
   (($# >= 3)) || {

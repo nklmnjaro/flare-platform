@@ -9,6 +9,7 @@ BUILD_REFERENCE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 builtin source "${BUILD_REFERENCE_SOURCE_DIR}/../common/env.sh" || exit 1
 # shellcheck source=../common/tooling.sh
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh" || exit 1
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh" || exit 1
 # shellcheck source=runtime.sh
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh" || exit 1
 # shellcheck source=reference-context.sh
@@ -432,6 +433,7 @@ write_build_environment() {
 main() (
   local canary first_binary second_binary source_snapshot="" source_directory
   trap '[[ -z "${source_snapshot}" ]] || run_host_command rm -rf -- "${source_snapshot}"' EXIT
+  lifecycle_lease_assert || return
   docker_target_ensure || return
   host_command_path git >/dev/null || return
   host_command_path tar >/dev/null || return

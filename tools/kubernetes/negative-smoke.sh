@@ -7,6 +7,7 @@ NEGATIVE_SMOKE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 builtin source "${NEGATIVE_SMOKE_SOURCE_DIR}/../common/env.sh"
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh"
 unset NEGATIVE_SMOKE_SOURCE_DIR
 
 STARTUP_MARKER="intentional startup failure requested"
@@ -14,10 +15,13 @@ NEGATIVE_EVIDENCE_SCHEMA="flare-platform-runtime-identity-negative-v1"
 NEGATIVE_EVIDENCE_RELATIVE="runtime-identity/negative.env"
 
 emergency_cleanup() {
-  local status=$?
-  if [[ -f "${KUBECONFIG}" ]]; then
+  local status=$? lease_status=0
+  lifecycle_lease_clear_interrupt_traps
+  if [[ "${LIFECYCLE_LEASE_INTERRUPTED}" != true && -f "${KUBECONFIG}" ]]; then
     "${PLATFORM_ROOT}/tools/kubernetes/delete-namespace.sh" >/dev/null 2>&1 || true
   fi
+  lifecycle_lease_release || lease_status=$?
+  ((status != 0)) || status="${lease_status}"
   return "${status}"
 }
 
@@ -197,8 +201,10 @@ main() {
     prove_diagnostics_measurement_failure
     return
   fi
-  docker_target_ensure || return
+  lifecycle_lease_acquire negative-smoke || return
   trap emergency_cleanup EXIT
+  lifecycle_lease_install_interrupt_traps
+  docker_target_ensure || return
 
   evidence="$(prepare_state_file "${NEGATIVE_EVIDENCE_RELATIVE}")" || return
   run_host_command rm -f -- "${evidence}"
@@ -258,7 +264,9 @@ main() {
   fi
   [[ "${status}" == 0 ]] || return 1
   printf 'PASS  kind-negative expected failure, diagnostics, and cleanup proved\n'
+  lifecycle_lease_release || return
   trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
 }
 
 main "$@"

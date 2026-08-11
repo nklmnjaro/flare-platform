@@ -22,7 +22,7 @@ host_command_fail() {
 host_command_is_supported() {
   case "$1" in
     awk | basename | bash | cat | chmod | cmp | cp | curl | cut | diff | \
-      dirname | docker | env | find | git | grep | gzip | head | ln | make | \
+      dirname | docker | env | find | flock | git | grep | gzip | head | ln | make | \
       mkdir | mkfifo | mktemp | mv | od | readlink | rm | sed | sha256sum | \
       sleep | sort | stat | tail | tar | tee | timeout | tr | uname | wc)
       builtin return 0
@@ -33,6 +33,9 @@ host_command_is_supported() {
 
 host_command_path_is_project_owned() {
   builtin local candidate="$1"
+  if [[ "${candidate}" =~ ^/tmp/flare-platform-lifecycle-lease-[0-9a-f]{64}(/.*)?$ ]]; then
+    builtin return 0
+  fi
   case "${candidate}" in
     "${PLATFORM_ROOT}" | "${PLATFORM_ROOT}"/* | \
       "${PLATFORM_STATE_DIR}" | "${PLATFORM_STATE_DIR}"/* | \

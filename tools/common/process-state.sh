@@ -71,7 +71,7 @@ _linux_process_root_available() {
   path="${proc_root}/self/stat"
   [[ -e "${path}" && ! -L "${path}" ]] ||
     return "${PROCESS_STATE_INSPECTION_STATUS}"
-  if ! IFS= builtin read -r record <"${path}" 2>/dev/null; then
+  if ! IFS= builtin read -r record 2>/dev/null <"${path}"; then
     return "${PROCESS_STATE_INSPECTION_STATUS}"
   fi
   [[ -n "${record}" ]] || return "${PROCESS_STATE_INSPECTION_STATUS}"
@@ -86,7 +86,7 @@ _linux_process_load_stat_at() {
     _linux_process_root_available "${proc_root}" || return
     return 1
   fi
-  if [[ -L "${path}" ]] || ! IFS= builtin read -r record <"${path}" 2>/dev/null; then
+  if [[ -L "${path}" ]] || ! IFS= builtin read -r record 2>/dev/null <"${path}"; then
     if [[ ! -e "${path}" ]]; then
       _linux_process_root_available "${proc_root}" || return
       return 1

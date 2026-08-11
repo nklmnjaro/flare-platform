@@ -6,6 +6,7 @@ OWNERSHIP_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
   OWNERSHIP_SOURCE_DIR=.
 builtin source "${OWNERSHIP_SOURCE_DIR}/../common/env.sh"
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/checkout-identity.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
 builtin unset OWNERSHIP_SOURCE_DIR
 
@@ -30,53 +31,6 @@ OWNERSHIP_SNAPSHOT_CHECKOUT_ID=''
 ownership_fail() {
   builtin printf 'FAIL  ownership     %s\n' "$*" >&2
   return 1
-}
-
-checkout_identity_for_root() {
-  local root="${1:-}" physical_root hash_output sentinel=$'\036'
-  local LC_ALL=C
-  [[ $# -eq 1 && -n "${root}" && -d "${root}" ]] || {
-    ownership_fail 'checkout root is unavailable'
-    return
-  }
-  physical_root="$({
-    builtin cd -P -- "${root}" 2>/dev/null &&
-      builtin pwd -P && builtin printf '%s' "${sentinel}"
-  })" || {
-    ownership_fail 'checkout root is not canonical'
-    return
-  }
-  [[ "${physical_root: -1}" == "${sentinel}" ]] || {
-    ownership_fail 'checkout root capture is incomplete'
-    return
-  }
-  physical_root="${physical_root::-1}"
-  [[ "${physical_root: -1}" == $'\n' ]] || {
-    ownership_fail 'checkout root capture is malformed'
-    return
-  }
-  physical_root="${physical_root::-1}"
-  [[ "${physical_root}" == /* ]] || {
-    ownership_fail 'checkout root is not canonical'
-    return
-  }
-  hash_output="$({
-    builtin printf 'flare-platform-checkout-v1\0uid=%s\0root=%s\0' \
-      "${EUID}" "${physical_root}" |
-      run_host_command sha256sum --
-  })" || {
-    ownership_fail 'checkout identity hash failed'
-    return
-  }
-  if [[ ! "${hash_output}" =~ ^([0-9a-f]{64})\ \ -$ ]]; then
-    ownership_fail 'checkout identity hash is malformed'
-    return
-  fi
-  builtin printf 'sha256:%s\n' "${BASH_REMATCH[1]}"
-}
-
-platform_checkout_identity() {
-  checkout_identity_for_root "${PLATFORM_ROOT}"
 }
 
 ownership_validate_snapshot() {

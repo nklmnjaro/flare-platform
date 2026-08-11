@@ -4,7 +4,17 @@ set -euo pipefail
 KIND_DOWN_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "${KIND_DOWN_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || KIND_DOWN_SOURCE_DIR=.
 builtin source "${KIND_DOWN_SOURCE_DIR}/ownership.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh"
 builtin unset KIND_DOWN_SOURCE_DIR
+
+cleanup_lifecycle_lease() {
+  local status=$? lease_status=0
+  trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
+  lifecycle_lease_release || lease_status=$?
+  ((status != 0)) || status="${lease_status}"
+  exit "${status}"
+}
 
 export_owned_cluster() {
   prepare_kubeconfig_output || return
@@ -24,6 +34,9 @@ main() {
     printf 'FAIL  kind-down     only --if-present is accepted\n' >&2
     return 2
   fi
+  lifecycle_lease_acquire kind-down || return
+  trap cleanup_lifecycle_lease EXIT
+  lifecycle_lease_install_interrupt_traps
 
   if ! require_tool kind >/dev/null 2>&1; then
     if [[ "${if_present}" == true && ! -e "${KUBECONFIG}" && ! -L "${KUBECONFIG}" ]]; then
@@ -58,6 +71,9 @@ main() {
   fi
   run_host_command rm -f -- "${KUBECONFIG}"
   printf 'PASS  kind-down     deleted owned cluster %s\n' "${PLATFORM_CLUSTER_NAME}"
+  lifecycle_lease_release || return
+  trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
 }
 
 main "$@"

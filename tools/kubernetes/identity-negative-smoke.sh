@@ -8,6 +8,7 @@ builtin source "${IDENTITY_NEGATIVE_SOURCE_DIR}/../common/env.sh"
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh"
 # This helper guards its CLI entry point and is safe to source.
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh"
 unset IDENTITY_NEGATIVE_SOURCE_DIR
@@ -99,7 +100,8 @@ stop_unbound_port_forward() {
 }
 
 emergency_cleanup() {
-  local status=$?
+  local status=$? lease_status=0
+  lifecycle_lease_clear_interrupt_traps
   if [[ -n "${PORT_FORWARD_PID}" ]]; then
     if [[ -n "${PORT_FORWARD_STARTTIME}" ]]; then
       runtime_identity_stop_tracked \
@@ -113,9 +115,11 @@ emergency_cleanup() {
     PORT_FORWARD_STARTTIME=""
   fi
   remove_probe_files || true
-  if [[ -f "${KUBECONFIG}" ]]; then
+  if [[ "${LIFECYCLE_LEASE_INTERRUPTED}" != true && -f "${KUBECONFIG}" ]]; then
     "${PLATFORM_ROOT}/tools/kubernetes/delete-namespace.sh" >/dev/null 2>&1 || true
   fi
+  lifecycle_lease_release || lease_status=$?
+  ((status != 0)) || status="${lease_status}"
   return "${status}"
 }
 
@@ -366,7 +370,7 @@ apply_reference() {
 }
 
 start_dynamic_port_forward() {
-  local attempt port status=0
+  local attempt port status=0 gate_deadline
   docker_target_ensure || return
   docker_target_assert_frozen || return
   PORT_FORWARD_LOG="$(run_host_command mktemp \
@@ -377,13 +381,17 @@ start_dynamic_port_forward() {
   runtime_identity_begin_tracked_cleanup
   set -m
   (
+    gate_deadline=$((SECONDS + 5))
     set +m
-    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do
+      ((SECONDS < gate_deadline)) || exit "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+      run_host_command sleep 0.02
+    done
     [[ "$(<"${PORT_FORWARD_START_GATE}")" == go ]] ||
       exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -c 0 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -f 64 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-    run_managed_tool kubectl --request-timeout=0 \
+    exec_managed_tool_bounded 60s kubectl --request-timeout=0 \
       port-forward --address=127.0.0.1 \
       -n "${PLATFORM_NAMESPACE}" service/platform-reference :8080
   ) >"${PORT_FORWARD_LOG}" 2>&1 &
@@ -721,8 +729,10 @@ main() {
     return 2
   fi
 
-  docker_target_ensure || return
+  lifecycle_lease_acquire identity-negative-smoke || return
   trap emergency_cleanup EXIT
+  lifecycle_lease_install_interrupt_traps
+  docker_target_ensure || return
   evidence="$(prepare_state_file "${STALE_EVIDENCE_RELATIVE}")" || return
   run_host_command rm -f -- "${evidence}"
 
@@ -745,7 +755,9 @@ main() {
   printf 'INFO  runtime-stale order=12 stale_evidence_published=true\n'
 
   printf 'PASS  runtime-stale loaded A rejected stale same-tag expectation B\n'
+  lifecycle_lease_release || return
   trap - EXIT
+  lifecycle_lease_clear_interrupt_traps
 }
 
 main "$@"

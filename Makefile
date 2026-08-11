@@ -94,10 +94,10 @@ artifact-verify:
 verify:
 	@tools/quality/check.sh
 	@tools/quality/prove-gates.sh
-	@tools/kubernetes/verify.sh
+	@tools/kubernetes/verify.sh --action verify
 
 verify-runtime:
-	@tools/kubernetes/verify.sh
+	@tools/kubernetes/verify.sh --action verify-runtime
 
 diagnose:
 	@tools/diagnostics/collect.sh
@@ -115,6 +115,4 @@ kind-down:
 	@tools/kubernetes/kind-down.sh
 
 clean:
-	@tools/kubernetes/kind-down.sh --if-present
-	@builtin source tools/common/env.sh; \
-	  run_host_command rm -rf -- "$${PLATFORM_STATE_DIR}"
+	@tools/common/clean.sh

@@ -37,7 +37,7 @@ ENVIRONMENT_PROFILE_TRUSTED_MKDIR_PATH=""
 ENVIRONMENT_PROFILE_TRUSTED_RM_PATH=""
 declare -A ENVIRONMENT_PROFILE_HOST_PATHS=()
 readonly -a ENVIRONMENT_PROFILE_HOST_COMMAND_NAMES=(
-  awk basename bash cat chmod cmp cp curl cut diff dirname env find git grep gzip
+  awk basename bash cat chmod cmp cp curl cut diff dirname env find flock git grep gzip
   head ln make mkdir mkfifo mktemp mv od readlink rm sed sha256sum sleep
   sort stat tail tar tee timeout tr uname wc
 )
@@ -342,6 +342,37 @@ environment_profile_check_file_utilities() {
   [[ "${output}" == make-ready ]] || return
 }
 
+environment_profile_check_flock_semantics() (
+  local lock="${1}/flock.lock" inherited_fd status=0
+  : >"${lock}" || return
+  exec {inherited_fd}<>"${lock}" || return
+  "${ENVIRONMENT_PROFILE_HOST_PATHS[flock]}" \
+    --exclusive --nonblock --conflict-exit-code 75 "${inherited_fd}" || return
+  # The inherited descriptor must name the same open-file description and may
+  # therefore reuse the lock without deadlocking.
+  # The positional arguments expand only in the isolated child.
+  # shellcheck disable=SC2016
+  "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}" -p -c \
+    '"$1" --exclusive --nonblock --conflict-exit-code 75 "$2"' _ \
+    "${ENVIRONMENT_PROFILE_HOST_PATHS[flock]}" "${inherited_fd}" || return
+  # A separately opened descriptor must be rejected while the original is
+  # held.  A zero-returning impostor fails this half of the capability proof.
+  # The positional arguments expand only in the isolated child.
+  # shellcheck disable=SC2016
+  "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}" -p -c '
+exec {candidate_fd}<>"$2" || exit 70
+"$1" --exclusive --nonblock --conflict-exit-code 75 "${candidate_fd}"
+' _ "${ENVIRONMENT_PROFILE_HOST_PATHS[flock]}" "${lock}" || status=$?
+  [[ "${status}" -eq 75 ]] || return 1
+  exec {inherited_fd}>&-
+  # The positional arguments expand only in the isolated child.
+  # shellcheck disable=SC2016
+  "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}" -p -c '
+exec {candidate_fd}<>"$2" || exit 70
+"$1" --exclusive --nonblock --conflict-exit-code 75 "${candidate_fd}"
+' _ "${ENVIRONMENT_PROFILE_HOST_PATHS[flock]}" "${lock}"
+)
+
 environment_profile_check_host_utilities() (
   local work token
   environment_profile_create_owned_workspace \
@@ -360,6 +391,11 @@ environment_profile_check_host_utilities() (
   }
   environment_profile_check_file_utilities "${work}" || {
     environment_profile_fail host-capability "bounded file and command semantics are unavailable"
+    return
+  }
+  environment_profile_check_flock_semantics "${work}" || {
+    environment_profile_fail host-capability \
+      "bounded flock descriptor semantics are unavailable"
     return
   }
   environment_profile_remove_owned_workspace \
@@ -645,9 +681,9 @@ environment_profile_prove_process_group() (
   cleanup_environment_process() {
     trap - EXIT
     [[ -z "${release_read_fd}" ]] ||
-      builtin exec {release_read_fd}<&- 2>/dev/null || true
+      exec {release_read_fd}<&- 2>/dev/null || true
     [[ -z "${release_write_fd}" ]] ||
-      builtin exec {release_write_fd}>&- 2>/dev/null || true
+      exec {release_write_fd}>&- 2>/dev/null || true
     if [[ -n "${child}" && -n "${starttime:-}" ]]; then
       snapshot="$(linux_process_snapshot "${child}" 2>/dev/null || true)"
       IFS=$'\t' read -r observed_pid group _ kernel_state <<<"${snapshot}"
@@ -724,8 +760,8 @@ environment_profile_prove_process_group() (
       "spawned job process-group visibility is unavailable"
     return 1
   }
-  builtin exec {release_read_fd}<&-
-  builtin exec {release_write_fd}>&-
+  exec {release_read_fd}<&-
+  exec {release_write_fd}>&-
   release_read_fd=""
   release_write_fd=""
 
@@ -900,7 +936,8 @@ environment_profile_check_buildkit_parser() (
     "${work}" "${token}" "${rm_path}" >/dev/null 2>&1 || true' EXIT
   log="${work}/build.log"
   expected="sha256:$(printf 'a%.0s' {1..64})"
-  printf '#1 writing image %s done\n' "${expected}" >"${log}" || return
+  printf '#1 writing image %s\n#1 writing image %s 0.0s done\n' \
+    "${expected}" "${expected}" >"${log}" || return
   observed="$(buildkit_result_config_id "${log}")" || {
     environment_profile_fail buildkit-result \
       "shared exact BuildKit result parser is unavailable"
