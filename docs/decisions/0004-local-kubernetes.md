@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: runtime executable and build-input identity proven at `38730f9`
+Status: Closure-007 candidate implemented; final live and clean replay required
 
 ## Decision
 
@@ -10,16 +10,75 @@ Platform mechanics only; it is not a Flare product deployment.
 The cluster identity is fixed to `flare-platform-dev`. Every Kubernetes command
 uses the isolated `.platform/kubeconfig`, requires the exact
 `kind-flare-platform-dev` context, and rejects a symlinked state directory or
-kubeconfig before any exporter writes. Reuse and deletion additionally require
-the in-cluster ownership ConfigMap.
+kubeconfig before any exporter writes. Reuse, namespace deletion, and cluster
+deletion additionally require the exact checkout-bound in-cluster ownership
+ConfigMap and a project-and-cluster lifecycle lease.
+
+## Checkout-bound ownership
+
+One shared identity module derives `checkout_id=sha256:<64 lowercase hex>` from
+the effective user ID and canonical physical checkout root under the versioned
+`flare-platform-checkout-v1` domain. Kubernetes and evidence store only that
+digest, never the raw checkout path. The ownership ConfigMap must contain
+exactly these four data keys and no binary data:
+
+```text
+contract_version=checkout-v1
+owner=flare-platform-infra
+cluster_name=flare-platform-dev
+checkout_id=sha256:<64 lowercase hex>
+```
+
+Admission captures one bounded, exactly 12-line snapshot containing the object
+type, namespace, name, UID, resource version, data counts, and four values.
+Immediately before a namespace or cluster mutation, the consumer reads the
+marker again and requires byte-for-byte equality with that admitted snapshot.
+Legacy, malformed, foreign-contract, other-cluster, and other-checkout markers
+are never rewritten, adopted, or used as delete authority.
+
+The digest is an accidental-safety boundary between normal same-user checkouts.
+It is not authentication or protection from a hostile process running as the
+same user, and a digest value alone is never deletion authority without the
+exact live ConfigMap snapshot and lifecycle lease.
+
+## Host-local lifecycle lease
+
+The named kind cluster is host-local state shared by normal same-user checkouts
+on one daemon. A lock stored inside one checkout cannot serialize another, so
+the literal project-local storage proposed by the task would leave the
+reproduced race open. The minimal correct rendezvous is a deterministic
+directory below `/tmp` derived from a versioned Platform project-and-cluster
+contract. It contains no
+raw checkout path or username and is not a scheduler, service, database,
+distributed lock, or authorization system.
+
+The boundary requires canonical root-owned mode-1777 `/tmp`; an EUID-owned
+mode-0700 lease directory; and EUID-owned, mode-0600, single-link regular lock
+and holder files. It pins and compares directory, path, descriptor, and inode
+identity around creation and use. A non-blocking kernel `flock` admits one root
+owner. Its bounded holder binds schema, PID, Linux process start time, checkout
+digest, root action, and a random-derived token. Nested commands inherit the
+open descriptor, schema, and token and validate the exact holder instead of
+trying to acquire a second lock.
+
+An active contender returns status `75` before Docker, kind, or kubectl
+mutation. Unsafe, changed, or malformed coordination state returns status `76`.
+Recovery can remove an exact stale holder only after the kernel lock is held and
+the PID/start-time classifier proves the prior owner absent, terminal, or
+replaced. Successful release removes the holder but intentionally retains the
+shared directory and free lock file as exact lock-only host state; `make clean`
+participates in the same lease and does not erase that rendezvous.
 
 ## Lifecycle properties
 
 - kind, kubectl, Docker build/load, rollout, and port-forward calls have outer
   time bounds;
 - kubectl API calls also use request timeouts where streaming is not required;
-- a cluster successfully created by the current `kind-up` run is removed if a
-  later ownership/readiness step fails;
+- every mutating lifecycle entrypoint acquires or validates the same lease
+  before Docker, kind, or kubectl mutation;
+- on an ordinary failure, a cluster created by the current `kind-up` run is
+  removed only when the exact marker snapshot installed by that run still
+  grants cleanup authority;
 - a pre-existing same-name cluster is never deleted without ownership proof;
 - destroy verifies the cluster is absent and is idempotent when already absent;
 - smoke resources stay in the isolated `flare-platform-reference` namespace;
@@ -39,14 +98,22 @@ the in-cluster ownership ConfigMap.
   observed, then captures stream-bounded diagnostics and proves cleanup;
 - positive and negative EXIT traps stay armed until full PASS; emergency cleanup
   is best effort and never substitutes for explicit absence evidence;
+- TERM/HUP/INT mark the owner interrupted; EXIT cleanup closes the root owner's
+  descriptor and skips sibling mutation, while an inherited descendant can keep
+  the kernel lock busy until it exits;
+- KILL cannot be trapped; an inherited descriptor has the same retention
+  behavior, after which exact stale-holder recovery applies;
 - runtime verification performs an explicit final cluster teardown whose
   failure changes the command result.
 
-If `kind create` itself fails before reporting success, automation removes its
-local kubeconfig but does not blindly delete a same-name cluster because
-in-cluster ownership is not yet provable. This is a deliberate safe stop, not a
-cleanup false green. Recovery requires an operator to establish container
-provenance before using raw kind cleanup, as documented in the runbook.
+If `kind create` fails before reporting success, or the process is interrupted
+after creation but before marker publication, automation does not blindly
+delete a newly visible same-name cluster because in-cluster ownership is not yet
+provable. The interrupted path retains its kubeconfig for diagnosis. A retry
+must reject the present unowned cluster without further mutation. This
+create-to-marker gap is irreducible without changing kind itself; recovery
+requires an operator to establish container provenance before raw kind cleanup,
+as documented in the runbook.
 
 ## Reference fixture
 
@@ -116,6 +183,15 @@ failure, namespace cleanup, and repeated cluster teardown are recorded in
 `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`. That record
 supersedes only the runtime-identity boundary; it does not rewrite the earlier
 promotion evidence.
+
+Closure-007 preserves those historical runtime results and adds checkout-bound
+ownership plus lease-backed lifecycle serialization. Its fixtures retain the
+unsafe pre-lease ownership/delete ordering as RED evidence and require the
+leased ordering as GREEN evidence. The final combined live two-checkout journey,
+bounded concurrency replay, and clean-clone replay have not yet been attached to
+an immutable documentation commit, so present promotion remains unclaimed.
+The candidate boundary is recorded in
+`docs/evidence/PLATFORM-LOCAL-RUNTIME-ISOLATION-AND-CONCURRENCY-007__20260811.md`.
 
 ## Non-goals
 

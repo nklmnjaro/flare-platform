@@ -1,6 +1,6 @@
 # ADR 0006: Capability-based verification environment
 
-Status: Closure-006 candidate implemented locally; final live and clean replay required
+Status: Closure-007 candidate implemented locally; final live and clean replay required
 
 ## Decision
 
@@ -14,6 +14,8 @@ requires the exact host behavior consumed by the repository:
 - Bash process and strict-mode behavior used by bounded capture and cleanup;
 - GNU tar deterministic ustar options used by the Docker stdin context;
 - GNU timeout foreground, signal, and kill-after options;
+- external `flock` descriptor, non-blocking, and conflict-status behavior used
+  by the host-local lifecycle lease;
 - readable Linux `/proc/<pid>/stat` process state;
 - the fixed required host command surface, admitted as canonical absolute
   executables outside the checkout and generated `.platform` state, with
@@ -71,6 +73,13 @@ aliases/functions and non-file command types are rejected, and calls use the
 cached absolute executable. It is not evidence of root ownership,
 package-manager provenance, or a digest for every host utility.
 
+The same host-command boundary rejects lookup and resolved targets inside any
+deterministic Platform lifecycle-lease root below `/tmp`. That host-local state
+is shared coordination data, not an executable source. Environment admission
+behaviorally proves the exact `flock` semantics consumed by the lease; a
+same-named function, repository/generated-state executable, or lifecycle-root
+executable cannot satisfy the capability.
+
 The Docker boundary resolves the exact host-admitted `docker` executable and
 determines the effective endpoint from an explicit host, explicit context, or
 the selected context. Context metadata may be inspected locally, but only an
@@ -118,6 +127,15 @@ uses the exact admitted Docker executable and endpoint in child-shell build
 pipelines, requires `--builder default`, and gives kind the same sealed Docker
 environment. Doctor does not duplicate or claim those mutation proofs.
 
+All lifecycle commands that can reach Docker, kind, kubectl, or generated-state
+cleanup also acquire or validate one deterministic project-and-cluster lease.
+Separate same-user checkout paths must rendezvous because they target the same
+host-local cluster name. The root is therefore below canonical `/tmp`, not below
+one checkout's `.platform`; its holder remains checkout-bound through the shared
+checkout identity. Busy status `75` is ordinary contention. Status `76` means
+the coordination boundary is unsafe, changed, or malformed and must not be
+downgraded to a retry warning.
+
 ## Failure contract
 
 The environment proof contains intentional RED fixtures for missing host
@@ -126,10 +144,14 @@ shell/Git/Make/tar controls, unavailable `/proc`, unreachable or malformed
 Docker, remote and ambiguous endpoints, remote builder controls, target drift,
 a missing consumed BuildKit response, inherited Aqua policy/security controls,
 lazy-install attempts, and absent or wrong project-managed kind/kubectl
-identity. The ready-toolchain and Docker adapters require exact test-only
-contracts and owned temporary roots. A fake command that merely exits zero is
-not capability evidence, and each trust RED proves its exact status/reason plus
-absence of the forbidden execution or mutation marker.
+identity. The environment proof additionally rejects shadowed or semantically
+inadequate `flock` and command resolution through shared lease state. The
+separate common lifecycle proof owns unsafe lease directories/files, malformed
+holders, PID/start-time replacement, and inherited lease-state REDs. The
+ready-toolchain and Docker adapters require exact test-only contracts and owned
+temporary roots. A fake command that merely exits zero is not capability
+evidence. Each trust RED proves its exact status/reason plus absence of the
+forbidden execution or mutation marker.
 
 ## Support statement
 
@@ -141,4 +163,7 @@ remote Docker/BuildKit, remote Kubernetes, cloud provisioning, registries, and
 production remain unsupported, unverified, or out of scope until separately
 authorized. The Closure-006 implementation snapshot is
 `cbc68e9c019f87cc2420d7c0fea97271ca234918`; final live runtime and clean-clone
-acceptance replay are still pending.
+acceptance replay are still pending. Closure-007 preserves that execution-trust
+baseline and adds checkout-bound lifecycle ownership and serialization. The
+final combined live and clean-clone replay is still pending, so promotion is not
+claimed.

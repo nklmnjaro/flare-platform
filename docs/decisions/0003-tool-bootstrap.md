@@ -1,6 +1,6 @@
 # ADR 0003: Project-local tool bootstrap
 
-Status: Closure-006 source candidate implemented; final live and clean replay required
+Status: Closure-007 candidate implemented; final live and clean replay required
 
 ## Decision
 
@@ -58,22 +58,30 @@ entry whose resolved target remains below `.platform/aqua`. External PATH
 entries are not fallbacks. Aqua configuration and checksums remain the source
 of package-version truth; the admission boundary does not duplicate versions.
 
-Bash, Git, curl, tar, timeout, Docker, and the fixed small host-utility surface
-remain host-owned by enforcement, not by PATH precedence. Here host-owned means
-that the caller search path is captured before project state is published, the
-command is admitted as a canonical absolute regular executable, and both its
-lookup location and resolved target are outside the checkout and every
-`.platform` generated-state path. Shell aliases, functions, non-file command
+Bash, Git, curl, tar, timeout, `flock`, Docker, and the fixed small host-utility
+surface remain host-owned by enforcement, not by PATH precedence. Here,
+host-owned means that the caller search path is captured before project state is
+published, the command is admitted as a canonical absolute regular executable,
+and both its lookup location and resolved target are outside the checkout and
+every `.platform` generated-state path. Shell aliases, functions, non-file command
 types, repository targets, and project-generated substitutes are rejected.
 Admitted commands are executed by their cached absolute paths, and process PATH
 contains only canonical external host directories. This is not a claim that
 every host executable is root-owned, package-manager-proven, or digest-pinned.
 
 `make doctor` behaviorally checks the exact host surface it consumes, including
-`readlink`, without installing or changing those prerequisites. Kubernetes RED
+`readlink` and the non-blocking kernel-lock behavior used by `flock`, without
+installing or changing those prerequisites. Kubernetes RED
 proofs use an explicit adapter enabled only by the exact test contract and
 confined to an owned temporary fixture root; production entrypoints cannot
 select it.
+
+The lifecycle lease is not managed-tool state. It is one deterministic
+host-local rendezvous below `/tmp`, derived from a fixed Platform project and
+cluster contract so separate same-user checkouts reach the same shared lock. The
+host-command admission boundary explicitly excludes that generated lease root;
+it cannot become a source of host executables. The lease directory and files
+have their own owner, type, mode, link-count, descriptor, and inode checks.
 
 ## Checksum admission
 
@@ -124,7 +132,9 @@ host-command admission, normal Aqua execution, local Docker selection, and the
 pristine environment proof remained incomplete. Closure-006 continues from
 that exact candidate and has an implementation snapshot at
 `cbc68e9c019f87cc2420d7c0fea97271ca234918`; final live and clean-clone replay
-remain pending, so promotion is still unclaimed.
+remain pending. Closure-007 preserves those tool boundaries while adding
+checkout ownership and the shared lifecycle rendezvous. The final combined live
+and clean-clone replay remains pending, so promotion is still unclaimed.
 
 ## Host prerequisites
 

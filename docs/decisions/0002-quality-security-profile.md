@@ -1,6 +1,6 @@
 # ADR 0002: Quality and security profile
 
-Status: historical replay verified; present promotion revoked pending closure
+Status: Closure-007 candidate implemented; final live and clean replay required
 
 ## Decision
 
@@ -30,7 +30,8 @@ has completed its positive and RED replays.
 | Kubernetes schema | kubeconform | invalid resource shape | versioned schema validation | invalid resource | low | medium | check | BLOCKING |
 | Kubernetes policy | KubeLinter | dangerous workload settings | workload security policy | privileged pod | medium | medium | check | BLOCKING |
 | context identity | repository guard | mutation of unrelated cluster | exact local identity | unrelated context | low | low | prove-local/runtime | BLOCKING |
-| lifecycle safety | repository fixture | unsafe delete/cleanup false green | ownership and absence proof | unowned/API failure | low | low | prove-local/runtime | BLOCKING |
+| lifecycle ownership | repository fixture | cross-checkout reuse/delete or changed-marker TOCTOU | exact checkout-bound snapshot and absence proof | foreign/legacy/malformed/replaced marker | low | low | prove-local/runtime | BLOCKING |
+| lifecycle serialization | kernel `flock` plus repository fixtures | concurrent kind/kubectl mutation | one project-and-cluster lease with captured mutation order | retained pre-lease race, active/stale/malformed holder, interruption | low | low | prove-local/runtime | BLOCKING |
 | artifact integrity | repository helper | tamper, hidden bytes, path escape, leak, resource exhaustion | canonical bounded archive boundary | tamper/symlink/path/home/bytes/limits/self-pack | low | low-medium | prove-local | BLOCKING |
 | generated state | repository helper | writes or resets escape through symlinks | one path contract for all local state writers | root/nested/file/reset/traversal | low | low | prove-local/all writers | BLOCKING |
 | tool checksum admission | bootstrap guard | unchecked CI tool install | fail-closed CI admission | unlocked Aqua config | low | low | bootstrap/prove-local | BLOCKING |
@@ -45,6 +46,17 @@ contract in both its integrated checkout and a clean replacement-worker clone.
 The bounded clean-clone index records all 14 commands with status zero, empty
 initial/final Git status, and an empty `git fsck --full` result. Exact evidence
 identities are retained in the current promotion record and handoff.
+
+Closure-007 adds a mechanized concurrency decision record. The retained
+pre-lease adapter reproduces the unsafe order:
+`ownership captured -> delete -> ownership returned`. The leased implementation
+requires: `ownership captured -> ownership returned -> delete`. Separate
+bounded fixtures cover simultaneous same-checkout creation, verification racing
+teardown, cross-checkout contention,
+TERM/KILL boundaries, stale-holder recovery, and interrupted deletion retry.
+Every rejected contender must leave Docker, kind, and kubectl mutation logs
+empty. These are blocking source contracts, but the final live and clean-clone
+replay for the combined candidate is still pending and promotion is not claimed.
 
 ## Workflow security boundary
 

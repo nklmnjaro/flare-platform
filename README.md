@@ -14,6 +14,8 @@ instead of reimplementing them.
 - Capability-verified Linux x86_64 local developer environment; exact host
   package versions are not a support proxy.
 - Project-local tool state under a guarded, non-symlink `.platform/` directory.
+- One host-local, project-and-cluster-scoped lifecycle lease that makes all
+  same-user checkouts rendezvous before they mutate the shared kind cluster.
 - Host-owned prerequisites admitted as canonical absolute executables outside
   the checkout and every `.platform` generated-state path.
 - Sealed, non-installing normal Aqua execution; bootstrap and maintainer-only
@@ -39,8 +41,10 @@ The prior local promotion records remain historical evidence. Independent
 review first revoked promotion for `f2107559` and later revoked acceptance of
 the verification-environment candidate `51af7e0` because host-command, Aqua,
 local-Docker, and pristine-proof boundaries were incomplete. Closure-006
-continues from that exact candidate; its final live runtime matrix and fresh
-plain-clone replay remain pending, so promotion is not claimed.
+continues from that exact candidate, and Closure-007 adds checkout-bound kind
+ownership plus cross-checkout lifecycle serialization. The final combined live
+runtime matrix and fresh plain-clone replay remain pending, so promotion is not
+claimed.
 
 ## Entry points
 
@@ -71,9 +75,11 @@ credentials, Docker configuration, or broad environment data. `make bootstrap`
 needs outbound HTTPS for first-time tool acquisition. CI refuses an unlocked
 Aqua configuration. Actual BuildKit execution, local image mutation, and the
 disposable-kind journeys remain owned by `make verify-runtime`. Persistent
-project state is kept under `.platform/`; bounded per-call scratch is removed
-after use. Writers reject symlinked directory and file targets before mutation.
-Use `make diagnose` for a bounded deterministic evidence ZIP.
+checkout state is kept under `.platform/`; the only host-local exception is the
+deterministic lifecycle rendezvous below `/tmp`, which normally remains as an
+exact free lock-only directory. Bounded per-call scratch is removed after use.
+Writers reject symlinked directory and file targets before mutation. Use
+`make diagnose` for a bounded deterministic evidence ZIP.
 
 Aqua-managed commands are admitted only from the guarded project state below
 `.platform/aqua`; same-named external PATH tools are never a fallback. This
@@ -102,11 +108,20 @@ make kind-down
 ```
 
 All Kubernetes commands use `.platform/kubeconfig` and require the exact context
-`kind-flare-platform-dev`. Cluster reuse and deletion require the exact Platform
-ownership marker; namespace deletion is context-guarded but does not yet claim
-a namespace ownership proof. Runtime operations and diagnostics are bounded;
-unsafe kubeconfig output paths are rejected before writes; namespace and cluster
-absence are explicitly verified.
+`kind-flare-platform-dev`. Cluster reuse, namespace deletion, and cluster
+deletion require an exact four-key ownership marker bound to the current
+checkout; the exact 12-line ConfigMap snapshot is rechecked immediately before
+mutation. A checkout digest is accidental-safety evidence, not authentication.
+Runtime operations and diagnostics are bounded; unsafe kubeconfig output paths
+are rejected before writes; namespace and cluster absence are explicitly
+verified.
+Every lifecycle entrypoint either acquires the deterministic host-local lease
+for the Platform project and cluster name or validates the inherited descriptor
+and token. A contender that finds the canonical kernel lock busy exits `75`
+before Docker, kind, or kubectl mutation; an encountered unsafe or malformed
+lease boundary exits `76`. Successful root release removes the holder record
+and leaves the shared root as exact free lock-only state.
+
 Before any Docker or kind mutation, the runtime admits one external local Unix
 socket and freezes a fingerprint over the canonical Docker executable,
 canonical endpoint, and socket device/inode. Docker children use the exact
@@ -119,8 +134,9 @@ runtime proof rejects loaded image A when same-tag expectation B differs before
 running the positive and startup-failure journeys. The accepted positive build
 is materialized from an exact clean Git commit/tree snapshot and passes a
 deterministic two-file tar through a hashing tee into `docker build`. See
-`docs/runbooks/local-kubernetes.md` and
-`docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
+`docs/runbooks/local-kubernetes.md`,
+`docs/evidence/PLATFORM-LOCAL-RUNTIME-ISOLATION-AND-CONCURRENCY-007__20260811.md`,
+and `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
 
 ## Gate enforcement
 

@@ -4,7 +4,7 @@
 
 The currently implemented environment is Linux x86_64, but OS identity alone
 does not establish support. The host must satisfy the bounded command, GNU tar,
-GNU timeout, `/proc`, Docker, and project-toolchain capabilities checked by
+GNU timeout, `flock`, `/proc`, Docker, and project-toolchain capabilities checked by
 `make doctor`. Docker must resolve through the admitted external host-command
 boundary to a reachable Linux amd64 daemon on a local Unix socket. System,
 rootless, and Docker Desktop socket paths are accepted by capability rather than
@@ -63,13 +63,50 @@ cluster on that same target, runs positive and negative workloads, captures
 bounded diagnostics for the negative path, and tears the cluster down. Builds
 use the exact admitted Docker executable and endpoint with empty per-call
 Docker/Buildx configuration, `DOCKER_BUILDKIT=1`, and `--builder default`.
+The outer verification command holds the shared project-and-cluster lifecycle
+lease; its nested lifecycle commands validate the inherited token and descriptor
+instead of locking again.
 
-Persistent generated project state is under `.platform/`. Owned observation and
-Docker child scratch may be created under the trusted temporary root and is
-removed before the command returns. The project root, Aqua
+Persistent generated checkout state is under `.platform/`. The lifecycle
+rendezvous is the single host-local exception: a deterministic directory below
+`/tmp` normally persists as an exact free lock file with no holder. Owned
+observation and Docker child scratch may be created under the trusted temporary
+root and is removed before the command returns. The project root, Aqua
 executable-directory chain, and every project path used for a write or reset
 must be real directories or regular files, not symlinks. Remove ordinary
-generated state with `make clean`.
+generated state with `make clean`; that command holds the lifecycle lease while
+it checks cluster cleanup and removes `.platform`, and it retains the shared
+free lock-only rendezvous.
+
+## Lifecycle contention and interruption
+
+Lifecycle commands cover `verify`, `verify-runtime`, `smoke`,
+`negative-smoke`, `identity-negative-smoke`, `kind-up`, `kind-down`,
+`delete-namespace`, and `clean`. They all rendezvous on the same host-local
+lock for the fixed Platform cluster even when started from different checkouts.
+
+`FAIL  lifecycle     another lifecycle action is active` with status `75`
+means the canonical kernel lock is busy. The rejected contender has not
+attempted Docker, kind, or kubectl mutation, but status `75` alone does not
+authenticate or validate the process holding the lock. Wait for the active
+operation or inherited descendant to finish, then rerun the entire canonical
+command; do not bypass the lease with raw tools. Status `76` means the root,
+lock, holder, descriptor, PID/start-time identity, or inherited token failed a
+trust check. Preserve the exact diagnostic and inspect the state before any
+operator action; do not delete or rewrite a holder merely because its PID text
+looks stale.
+
+TERM, HUP, and INT mark the owner interrupted. EXIT cleanup closes the root
+owner's descriptor and deliberately skips sibling mutating cleanup, while any
+live descendant that inherited the descriptor can keep the kernel lock busy
+until it exits. KILL cannot run a trap at all. A later contender recovers an
+exact stale holder only after acquiring the kernel lock and proving the recorded
+PID/start time absent, terminal, or replaced.
+
+An interruption after kind creates a cluster but before Platform publishes its
+ownership marker leaves a present unowned cluster. The next canonical command
+must stop without further mutation. Follow the operator validation procedure in
+the Kubernetes runbook; this gap is not an automatic adoption or delete path.
 
 Canonical quality, hook, and Kubernetes scripts execute Aqua-managed commands
 only through project-local entries below `.platform/aqua/bin`. An external PATH

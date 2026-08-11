@@ -6,6 +6,13 @@ Status: `CANDIDATE; FINAL LIVE AND CLEAN-CLONE REPLAY PENDING`
 
 Promotion: `NOT CLAIMED`
 
+Supersession note: Closure-007 preserves this execution-trust and local-Docker
+baseline but supersedes its present-tense kind ownership and concurrency
+boundary with checkout-bound markers and a host-local lifecycle lease. It does
+not retroactively complete the pending Closure-006 live or clean-clone replay;
+promotion remains unclaimed. See
+`PLATFORM-LOCAL-RUNTIME-ISOLATION-AND-CONCURRENCY-007__20260811.md`.
+
 ## Boundary and immutable source candidate
 
 This record covers the local Linux x86_64 execution-trust and local-daemon
