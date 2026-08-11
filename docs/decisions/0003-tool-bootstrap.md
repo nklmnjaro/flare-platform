@@ -1,6 +1,6 @@
 # ADR 0003: Project-local tool bootstrap
 
-Status: checksum lock committed; integrated and clean bootstrap verified
+Status: trust closure implemented; independent clean replay required
 
 ## Decision
 
@@ -9,9 +9,37 @@ versions. Aqua itself is bootstrapped as a pinned Linux amd64 archive. The
 archive and extracted binary have separate pinned SHA-256 values, and a cached
 binary must match the binary hash before any version or install execution.
 
+The pinned version, archive hash, binary hash, and exact-version verification
+live in one sourceable Aqua trust module. Ordinary bootstrap and the maintainer
+`tool-lock` operation use that same boundary. `tool-lock` verifies the cached
+Aqua file type, executable mode, binary digest, and exact version before it
+creates a backup, changes a tracked file, contacts the network, or executes an
+update/install operation.
+
 All Aqua state lives under `.platform/aqua`; no global package-manager changes
 or `sudo` operations are performed. The first supported host is Linux amd64.
 The repository never installs or reconfigures Docker.
+
+## Managed command admission
+
+The following commands are project-managed and execute only through a validated
+project-local entry below `.platform/aqua/bin`:
+
+```text
+go gofmt kind kubectl shellcheck shfmt actionlint zizmor
+hadolint trivy kubeconform kube-linter prek
+```
+
+Admission requires the trusted cached Aqua binary and an executable project
+entry whose resolved target remains below `.platform/aqua`. External PATH
+entries are not fallbacks. Aqua configuration and checksums remain the source
+of package-version truth; the admission boundary does not duplicate versions.
+
+Bash, Git, curl, tar, timeout, Docker, and the small host-utility surface remain
+host-owned. `make doctor` checks those prerequisites, including `readlink`,
+without installing or changing them. Kubernetes proof fixtures create explicit
+project-local mock entries in isolated temporary repositories; production
+admission is unchanged.
 
 ## Checksum admission
 
@@ -52,6 +80,12 @@ Both ordinary and `CI=true` bootstrap returned zero in the integrated checkout
 and in a clean replacement-worker clone of
 `42e877c489afe8347e4f5a797d453838c95a59c0`. The clean replay acquired Aqua and
 all locked tools from empty project-local state before running the gates.
+
+Those statements describe the historical replay. Independent review of
+`f2107559f3acad5cc5468b9e30e537c84add2c20` later revoked present promotion
+because `tool-lock` and managed-command admission did not yet share these trust
+boundaries. Promotion remains unclaimed until the closure receives a new plain
+clone replay and independent acceptance.
 
 ## Host prerequisites
 

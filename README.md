@@ -24,6 +24,11 @@ instead of reimplementing them.
 Remote infrastructure, production Kubernetes, GitOps, cloud provisioning, and Poker-specific runtime
 integration are intentionally out of scope until separately authorized.
 
+The prior local promotion record remains historical evidence. Independent
+review revoked present promotion for candidate `f2107559`; the bounded
+trust/toolchain closure and a fresh plain-clone replay must be accepted before
+promotion can be claimed again.
+
 ## Entry points
 
 ```bash
@@ -46,6 +51,10 @@ refuses an unlocked Aqua configuration. `make verify` additionally needs a
 working Docker daemon. Tool and runtime state is kept under `.platform/`;
 writers reject symlinked directory and file targets before mutation. Use
 `make diagnose` for a bounded deterministic evidence ZIP.
+
+Aqua-managed commands are admitted only from the guarded project state below
+`.platform/aqua`; same-named external PATH tools are never a fallback. This
+includes Go/gofmt, quality/security tools, kind/kubectl, and `prek`.
 
 ## Local Kubernetes
 
@@ -82,7 +91,9 @@ Workflow security uses `zizmor --offline` against checked-in files. This keeps
 the canonical local gate deterministic and blocks on enabled offline findings,
 but zizmor explicitly disables its online audit rules in this mode. Live
 repository settings and hosted GitHub behavior therefore require separate
-authorization and evidence. Local promotion for implementation
-`42e877c489afe8347e4f5a797d453838c95a59c0` passed both the integrated and clean
-replacement-worker matrices. See `docs/decisions/0002-quality-security-profile.md`
-and `docs/evidence/PLATFORM-PROMOTION-CLOSURE-002__20260810.md`.
+authorization and evidence. Implementation
+`42e877c489afe8347e4f5a797d453838c95a59c0` historically passed both the
+integrated and clean replacement-worker matrices; that record does not override
+the later promotion revocation for `f2107559`. See
+`docs/decisions/0002-quality-security-profile.md` and
+`docs/evidence/PLATFORM-PROMOTION-CLOSURE-002__20260810.md`.

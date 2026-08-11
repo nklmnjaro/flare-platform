@@ -10,13 +10,12 @@ Kubernetes verification.
 ```bash
 make doctor
 make bootstrap
-make tool-lock
-make bootstrap
 make hooks
 ```
 
-The second bootstrap is intentional and must succeed with committed required checksums.
-`make tool-lock` is needed only when creating or deliberately updating the lock.
+Ordinary bootstrap uses the committed required checksums. The trusted maintainer
+workflow for deliberately updating pinned tools is documented only in
+`docs/runbooks/tool-updates.md`.
 
 ## Fast feedback
 
@@ -40,6 +39,12 @@ cluster down.
 Generated state is under `.platform/`. The root, Aqua executable-directory chain, and every path used
 for a write or reset must be real directories or regular files, not symlinks. Remove ordinary generated
 state with `make clean`.
+
+Canonical quality, hook, and Kubernetes scripts execute Aqua-managed commands
+only through project-local entries below `.platform/aqua/bin`. An external PATH
+command with the same name is never an accepted fallback. If a command reports
+`project-managed toolchain unavailable or untrusted`, rerun `make bootstrap`
+rather than installing an unpinned host copy.
 
 If a command reports `FAIL  state-guard`, inspect the path before changing it:
 

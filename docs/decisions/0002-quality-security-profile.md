@@ -1,6 +1,6 @@
 # ADR 0002: Quality and security profile
 
-Status: blocking gates and local promotion replay verified at `42e877c`
+Status: historical replay verified; present promotion revoked pending closure
 
 ## Decision
 
