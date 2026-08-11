@@ -15,6 +15,8 @@ copy_runtime_files() {
     "${target}/tools/bootstrap/aqua-trust.sh"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
+  cp "${PLATFORM_ROOT}/tools/common/process-state.sh" \
+    "${target}/tools/common/process-state.sh"
   cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
     "${target}/tools/common/tooling-production.sh"
   cp "${PLATFORM_ROOT}/tools/kubernetes/managed-tool-fixture.sh" \

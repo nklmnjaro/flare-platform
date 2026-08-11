@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/process-state.sh"
+
 RUNTIME_IDENTITY_BOUNDARY_STATUS=73
 RUNTIME_IDENTITY_MISMATCH_STATUS=74
 RUNTIME_IDENTITY_MALFORMED_STATUS=75
@@ -457,7 +459,7 @@ runtime_identity_extract_build_result_id() {
 
 runtime_identity_process_or_group_exists() {
   local pid="$1"
-  kill -0 "${pid}" 2>/dev/null || kill -0 -- "-${pid}" 2>/dev/null
+  linux_process_or_group_is_live "${pid}"
 }
 
 runtime_identity_signal_group() {

@@ -3,6 +3,9 @@ set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/../bootstrap/aqua-trust.sh"
+PROCESS_STATE_MODULE_PATH="${PLATFORM_ROOT}/tools/common/process-state.sh"
+# shellcheck source=process-state.sh
+source "${PROCESS_STATE_MODULE_PATH}"
 
 EVIDENCE_BOUNDARY_STATUS=70
 EVIDENCE_WRONG_STATUS=71
@@ -213,11 +216,13 @@ raw_output=$1
 status_output=$2
 raw_max=$3
 boundary_status=$4
-shift 4
+process_state_module=$5
+shift 5
 command_pid=""
 collector_pid=""
 writer_fd=""
 set -m || exit "${boundary_status}"
+source "${process_state_module}" || exit "${boundary_status}"
 
 cleanup_capture() {
   local saved_status=$?
@@ -227,6 +232,10 @@ cleanup_capture() {
   [[ -z "${writer_fd}" ]] || exec {writer_fd}>&-
   [[ -z "${command_pid}" ]] || wait "${command_pid}" 2>/dev/null || true
   [[ -z "${collector_pid}" ]] || wait "${collector_pid}" 2>/dev/null || true
+  if [[ -n "${command_pid}" ]] &&
+    ! linux_wait_for_process_group_absence "${command_pid}"; then
+    saved_status="${boundary_status}"
+  fi
   exit "${saved_status}"
 }
 
@@ -260,6 +269,7 @@ set +m || exit "${boundary_status}"
 wait "${command_pid}"
 producer_status=$?
 kill -KILL -- "-${command_pid}" 2>/dev/null || true
+linux_wait_for_process_group_absence "${command_pid}" || exit "${boundary_status}"
 wait "${collector_pid}"
 collector_status=$?
 command_pid=""
@@ -267,7 +277,8 @@ collector_pid=""
 trap - EXIT TERM INT HUP
 [[ "${producer_status}" -eq 0 && "${collector_status}" -eq 0 ]]
 ' evidence-capture "${raw_output}" "${status_output}" \
-    "${EVIDENCE_MAX_RAW_BYTES}" "${EVIDENCE_BOUNDARY_STATUS}" "$@"
+    "${EVIDENCE_MAX_RAW_BYTES}" "${EVIDENCE_BOUNDARY_STATUS}" \
+    "${PROCESS_STATE_MODULE_PATH}" "$@"
 }
 
 read_captured_status() {

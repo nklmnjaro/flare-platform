@@ -14,7 +14,7 @@ prepare_fixture() {
   for path in aqua-trust.sh install-hooks.sh; do
     cp "${PLATFORM_ROOT}/tools/bootstrap/${path}" "${target}/tools/bootstrap/${path}"
   done
-  for path in env.sh state.sh tooling.sh run-managed-tool.sh; do
+  for path in env.sh state.sh process-state.sh tooling.sh run-managed-tool.sh; do
     cp "${PLATFORM_ROOT}/tools/common/${path}" "${target}/tools/common/${path}"
   done
   for path in runtime.sh verify.sh; do

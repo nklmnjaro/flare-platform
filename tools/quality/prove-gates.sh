@@ -175,7 +175,7 @@ prove_inherited_stdout_cleanup() {
   if ! IFS= read -r child_pid <"${pid_file}" || [[ ! "${child_pid}" =~ ^[0-9]+$ ]]; then
     printf 'FAIL  red-marker    inherited-output child PID was not captured\n' >&2
     proof_status=1
-  elif kill -0 "${child_pid}" 2>/dev/null; then
+  elif linux_process_is_live "${child_pid}"; then
     kill -KILL "${child_pid}" 2>/dev/null || true
     printf 'FAIL  red-marker    inherited-output child survived capture\n' >&2
     proof_status=1
@@ -188,8 +188,60 @@ prove_inherited_stdout_cleanup() {
   grep -Fqx 'actual_status=7' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
   grep -Fqx 'marker_observed=true' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
   [[ "${proof_status}" -eq 0 ]] || return 1
-  printf 'PASS  red-marker    inherited-output child killed without status drift\n'
+  printf 'PASS  red-marker    inherited-output child stopped without status drift\n'
 }
+
+prove_zombie_state_contract() (
+  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
+  local pid_file parent_pid="" child_pid="" state="" attempt
+  pid_file="$(mktemp "${evidence_dir}/.zombie-child.XXXXXXXX")" || return
+  # Invoked by the EXIT trap below.
+  # shellcheck disable=SC2329
+  cleanup_zombie_fixture() {
+    trap - EXIT
+    if [[ -n "${parent_pid}" ]]; then
+      kill -CONT -- "-${parent_pid}" 2>/dev/null || true
+      kill -KILL -- "-${parent_pid}" 2>/dev/null || true
+      wait "${parent_pid}" 2>/dev/null || true
+    fi
+    rm -f -- "${pid_file}"
+  }
+  trap cleanup_zombie_fixture EXIT
+  set -m
+  # Positional arguments expand inside the delayed-reaper fixture shell.
+  # shellcheck disable=SC2016
+  bash -c 'set -euo pipefail
+    sleep 0.1 &
+    printf "%s\n" "$!" >"$1"
+    kill -STOP "$$"
+    wait' _ "${pid_file}" >/dev/null 2>&1 &
+  parent_pid=$!
+  set +m
+  for ((attempt = 1; attempt <= 50; attempt++)); do
+    if IFS= read -r child_pid <"${pid_file}" &&
+      [[ "${child_pid}" =~ ^[0-9]+$ ]]; then
+      state="$(linux_process_state "${child_pid}" 2>/dev/null)" || state=""
+      [[ "${state}" != Z ]] || break
+    fi
+    sleep 0.02
+  done
+  if [[ "${state}" != Z ]] || ! kill -0 "${child_pid}" 2>/dev/null; then
+    printf 'FAIL  process-state deterministic zombie was not observed\n' >&2
+    return 1
+  fi
+  if linux_process_is_live "${child_pid}"; then
+    printf 'FAIL  process-state zombie was misclassified as executing\n' >&2
+    return 1
+  fi
+  if ! linux_process_group_has_live_member "${parent_pid}"; then
+    printf 'FAIL  process-state stopped group leader was misclassified as dead\n' >&2
+    return 1
+  fi
+  kill -CONT -- "-${parent_pid}" 2>/dev/null || return
+  wait "${parent_pid}" || return
+  parent_pid=""
+  printf 'PASS  process-state kill-0 zombie excluded under delayed reaper\n'
+)
 
 prove_evidence_symlink_guards() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
@@ -217,6 +269,7 @@ prove_red_marker_guard() {
   prove_literal_redaction
   prove_renderer_and_size_bounds
   prove_inherited_stdout_cleanup
+  prove_zombie_state_contract
   prove_evidence_symlink_guards
   assert_evidence_hygiene
   printf 'PASS  red-marker    rendering, reason, status, and bounds fail closed\n'
