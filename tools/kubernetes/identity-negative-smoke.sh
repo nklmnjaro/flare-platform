@@ -336,7 +336,8 @@ start_dynamic_port_forward() {
   ) >"${PORT_FORWARD_LOG}" 2>&1 &
   PORT_FORWARD_PID=$!
   set +m
-  pgid="$(ps -o pgid= -p "${PORT_FORWARD_PID}" | tr -d '[:space:]')" || return
+  pgid="$(linux_process_read_stat "${PORT_FORWARD_PID}")" || return
+  pgid="${pgid#* }"
   if [[ "${pgid}" != "${PORT_FORWARD_PID}" ]]; then
     printf 'FAIL  runtime-stale port-forward PID is not its process-group ID\n' >&2
     return 1

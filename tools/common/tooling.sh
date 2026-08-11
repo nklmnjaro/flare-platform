@@ -14,6 +14,7 @@ EVIDENCE_MAX_FILE_BYTES=32768
 EVIDENCE_MAX_RAW_BYTES=65536
 MANAGED_TOOL_PATH=""
 PROJECT_AQUA_VERIFIED=false
+PROJECT_AQUA_PROXY_VERIFIED=false
 
 is_managed_tool() {
   case "$1" in
@@ -47,6 +48,13 @@ resolve_managed_tool() {
     fi
     PROJECT_AQUA_VERIFIED=true
   fi
+  if [[ "${PROJECT_AQUA_PROXY_VERIFIED}" != true ]]; then
+    if ! verify_existing_aqua_proxy tooling >/dev/null 2>&1; then
+      managed_tool_failure "${command_name}"
+      return
+    fi
+    PROJECT_AQUA_PROXY_VERIFIED=true
+  fi
   if ! assert_existing_state_directory "aqua/bin"; then
     managed_tool_failure "${command_name}"
     return
@@ -59,7 +67,7 @@ resolve_managed_tool() {
     return
   fi
   symlink_target="$({
-    readlink -n -- "${candidate}" && printf '\036'
+    "${AQUA_TRUST_READLINK}" -n -- "${candidate}" && printf '\036'
   })" || {
     managed_tool_failure "${command_name}"
     return
@@ -68,11 +76,11 @@ resolve_managed_tool() {
     managed_tool_failure "${command_name}"
     return
   fi
-  root="$(readlink -f -- "${AQUA_ROOT_DIR}")" || {
+  root="$("${AQUA_TRUST_READLINK}" -f -- "${AQUA_ROOT_DIR}")" || {
     managed_tool_failure "${command_name}"
     return
   }
-  resolved="$(readlink -f -- "${candidate}")" || {
+  resolved="$("${AQUA_TRUST_READLINK}" -f -- "${candidate}")" || {
     managed_tool_failure "${command_name}"
     return
   }

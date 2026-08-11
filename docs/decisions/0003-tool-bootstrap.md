@@ -16,9 +16,12 @@ Aqua file type, executable mode, binary digest, and exact version before it
 creates a backup, changes a tracked file, contacts the network, or executes an
 update/install operation.
 
-All Aqua state lives under `.platform/aqua`; no global package-manager changes
-or `sudo` operations are performed. The first supported host is Linux amd64.
-The repository never installs or reconfigures Docker.
+All persistent project Aqua state lives under `.platform/aqua`; no global
+package-manager changes or `sudo` operations are performed. A bounded
+environment observation may use a temporary Aqua root and must remove it
+before returning. The current implemented OS/architecture pair is Linux
+x86_64, admitted together with the exact capabilities in ADR 0006 rather than
+by OS identity alone. The repository never installs or reconfigures Docker.
 
 ## Managed command admission
 
@@ -89,9 +92,11 @@ clone replay and independent acceptance.
 
 ## Host prerequisites
 
-`make doctor` verifies the small set of host utilities used by the canonical
-scripts. Docker is additionally required only for runtime verification. Tool
-versions used by static checks and kind are installed project-locally by Aqua.
+`make doctor` verifies the bounded host capabilities used by the canonical
+scripts, Docker reachability for the normal path, and project bootstrap state
+as separate results. It remains non-destructive. Tool versions used by static
+checks and kind are installed project-locally by Aqua. See ADR 0006 for the
+environment profile and the boundary between doctor and runtime proof.
 
 ## Network contract
 

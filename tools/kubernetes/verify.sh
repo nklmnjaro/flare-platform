@@ -25,6 +25,7 @@ prove_cluster_absent() {
 main() {
   local status=0
   local final_cluster_state=unknown repeated_cluster_state=unknown
+  "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" || return
   require_tool kind
   require_tool kubectl
   reset_state_directory "diagnostics/raw" || return

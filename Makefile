@@ -1,19 +1,22 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help doctor bootstrap tool-lock hooks check-fast check prove-local prove-gates verify
+.PHONY: help doctor environment-evidence bootstrap tool-lock hooks check-fast check
+.PHONY: prove-local prove-environment prove-gates verify
 .PHONY: prove-integrity artifact-pack artifact-verify diagnose verify-runtime
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
 	@printf '%s\n' \
 	  'doctor         inspect host prerequisites' \
+	  'environment-evidence print bounded environment evidence' \
 	  'bootstrap      install pinned project tools' \
 	  'tool-lock      generate checksums and enforce them' \
 	  'hooks          install pre-commit and commit-msg hooks' \
 	  'check-fast     cheap local static checks' \
 	  'check          full static and security checks' \
 	  'prove-local    prove offline-capable RED fixtures' \
+	  'prove-environment prove environment capability RED fixtures' \
 	  'prove-gates    prove all candidate gates fail on RED fixtures' \
 	  'prove-integrity prove handoff integrity fails closed' \
 	  'artifact-pack  create deterministic review artifact' \
@@ -29,6 +32,9 @@ help:
 
 doctor:
 	@tools/bootstrap/doctor.sh
+
+environment-evidence:
+	@tools/bootstrap/doctor.sh --machine
 
 bootstrap:
 	@tools/bootstrap/bootstrap.sh
@@ -47,6 +53,9 @@ check:
 
 prove-local:
 	@tools/quality/prove-gates.sh --local-only
+
+prove-environment:
+	@tools/bootstrap/prove-environment.sh
 
 prove-gates:
 	@tools/quality/prove-gates.sh

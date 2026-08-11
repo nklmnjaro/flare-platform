@@ -9,6 +9,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh" || exit 1
 source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh" || exit 1
 # shellcheck source=reference-context.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/reference-context.sh" || exit 1
+# shellcheck source=buildkit-result.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/buildkit-result.sh" || exit 1
 
 export LC_ALL=C
 
@@ -148,14 +150,12 @@ prove_host_binary_reproducibility() {
 
 extract_result_config_id() {
   local log="$1"
-  local -a results=()
-  mapfile -t results < <(sed -nE \
-    's/^#[0-9]+ writing image (sha256:[0-9a-f]{64}) done$/\1/p' "${log}") || return
-  if [[ "${#results[@]}" -ne 1 ]]; then
+  local result
+  if ! result="$(buildkit_result_config_id "${log}")"; then
     printf 'FAIL  reference-build expected exactly one BuildKit result config identity\n' >&2 || return
     return 1
   fi
-  printf '%s\n' "${results[0]}" || return
+  printf '%s\n' "${result}" || return
 }
 
 write_context_archive() {

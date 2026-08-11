@@ -1,55 +1,95 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S -u BASH_ENV -u ENV bash
+# shellcheck shell=bash
 set -euo pipefail
 
+# shellcheck source=../common/env.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+# shellcheck source=../common/tooling.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+# shellcheck source=environment-profile.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/environment-profile.sh"
 
 base_only=false
-[[ "${1:-}" == "--base-only" ]] && base_only=true
+machine=false
 
-is_forced_missing() {
-  [[ ",${PLATFORM_TEST_FORCE_MISSING:-}," == *",$1,"* ]]
+parse_arguments() {
+  case "${1:-}" in
+    "") ;;
+    --base-only) base_only=true ;;
+    --machine) machine=true ;;
+    *)
+      printf 'FAIL  doctor        usage: doctor.sh [--base-only|--machine]\n' >&2
+      return 2
+      ;;
+  esac
+  if [[ -n "${2:-}" ]]; then
+    printf 'FAIL  doctor        usage: doctor.sh [--base-only|--machine]\n' >&2
+    return 2
+  fi
 }
 
-has_command() {
-  ! is_forced_missing "$1" && command -v "$1" >/dev/null 2>&1
-}
+render_machine_evidence() (
+  local work token temporary line
+  environment_profile_create_owned_workspace evidence \
+    "${ENVIRONMENT_PROFILE_TRUSTED_MKDIR_PATH}" || return
+  work="${ENVIRONMENT_PROFILE_OWNED_WORKSPACE}"
+  token="${ENVIRONMENT_PROFILE_OWNED_TOKEN}"
+  trap 'environment_profile_remove_owned_workspace \
+    "${work}" "${token}" "${ENVIRONMENT_PROFILE_TRUSTED_RM_PATH}" \
+    >/dev/null 2>&1 || true' EXIT
+  temporary="${work}/environment.env"
+  environment_profile_render_evidence >"${temporary}" || return
+  if ! environment_profile_validate_evidence "${temporary}"; then
+    environment_profile_fail evidence "generated environment evidence is invalid"
+    return
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '%s\n' "${line}"
+  done <"${temporary}"
+  environment_profile_remove_owned_workspace \
+    "${work}" "${token}" "${ENVIRONMENT_PROFILE_TRUSTED_RM_PATH}" || return
+  work=""
+)
 
-require_command() {
-  local command_name="$1"
-  if has_command "${command_name}"; then
-    printf 'PASS  %-12s %s\n' "${command_name}" "$(command -v "${command_name}")"
+render_human_result() {
+  printf 'PASS  platform      Linux amd64 capability profile\n'
+  printf 'PASS  bash          GNU Bash %s job control, coproc, and wait\n' \
+    "${ENVIRONMENT_PROFILE_BASH_VERSION}"
+  printf 'PASS  curl          curl %s bounded HTTP/HTTPS transfer surface\n' \
+    "${ENVIRONMENT_PROFILE_CURL_VERSION}"
+  printf 'PASS  core-utils    hash/link/stat/temp/compare/FIFO/cleanup behavior\n'
+  printf 'PASS  tar           GNU tar %s deterministic ustar stream\n' \
+    "${ENVIRONMENT_PROFILE_TAR_VERSION}"
+  printf 'PASS  timeout       GNU coreutils %s foreground TERM/KILL bound\n' \
+    "${ENVIRONMENT_PROFILE_TIMEOUT_VERSION}"
+  printf 'PASS  process-state Linux /proc stat visibility\n'
+  [[ "${base_only}" != true ]] || return 0
+  printf 'PASS  docker        client=%s server=%s api=%s/%s linux/amd64\n' \
+    "${ENVIRONMENT_PROFILE_DOCKER_CLIENT_VERSION}" \
+    "${ENVIRONMENT_PROFILE_DOCKER_SERVER_VERSION}" \
+    "${ENVIRONMENT_PROFILE_DOCKER_CLIENT_API}" \
+    "${ENVIRONMENT_PROFILE_DOCKER_SERVER_API}"
+  printf 'PASS  docker-surface advertised stdin/network/pull/cache/plain flags\n'
+  printf 'INFO  buildkit      result execution is proved by make verify-runtime\n'
+  if [[ "${ENVIRONMENT_PROFILE_PROJECT_STATE}" == ready_for_bootstrap ]]; then
+    printf 'INFO  project       READY_FOR_BOOTSTRAP; run make bootstrap\n'
     return 0
   fi
-  printf 'FAIL  %-12s missing\n' "${command_name}" >&2
-  return 1
-}
-
-check_docker() {
-  require_command docker || return 1
-  if ! timeout 15s docker info >/dev/null 2>&1; then
-    printf 'FAIL  docker       daemon is not reachable within 15s\n' >&2
-    return 1
-  fi
+  printf 'PASS  project       READY Aqua=%s kind=%s kubectl=%s\n' \
+    "${ENVIRONMENT_PROFILE_AQUA_IDENTITY}" \
+    "${ENVIRONMENT_PROFILE_KIND_IDENTITY}" \
+    "${ENVIRONMENT_PROFILE_KUBECTL_IDENTITY}"
 }
 
 main() {
-  local failed=0
-  local command_name
-  local base=(awk bash curl cut find git grep gzip head make mktemp readlink sed sha256sum sort tar timeout tr uname wc)
-
-  if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
-    printf 'FAIL  platform     supported target is Linux x86_64\n' >&2
-    return 1
+  parse_arguments "$@" || return
+  if [[ "${machine}" == true ]]; then
+    environment_profile_run false true || return
+    render_machine_evidence
+    return
   fi
-  printf 'PASS  platform     Linux x86_64\n'
-
-  for command_name in "${base[@]}"; do
-    require_command "${command_name}" || failed=1
-  done
-  if [[ "${base_only}" == false ]]; then
-    check_docker || failed=1
-  fi
-  return "${failed}"
+  environment_profile_run "${base_only}" false || return
+  render_human_result
 }
 
 main "$@"

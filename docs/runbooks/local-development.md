@@ -2,16 +2,27 @@
 
 ## Prerequisites
 
-Use a Linux x86_64 host with Git, Make, curl, tar, gzip, sha256sum, and Docker. Docker must be running for
-Kubernetes verification.
+The currently implemented environment is Linux x86_64, but OS identity alone
+does not establish support. The host must satisfy the bounded command, GNU tar,
+GNU timeout, `/proc`, Docker, and project-toolchain capabilities checked by
+`make doctor`. Docker must be reachable for the normal doctor and Kubernetes
+verification paths.
 
 ## Bootstrap
 
 ```bash
 make doctor
 make bootstrap
+make environment-evidence
 make hooks
 ```
+
+`make doctor` does not build or pull images, create clusters, or install tools.
+On a pristine checkout it reports project bootstrap as ready to perform rather
+than treating absent project tools as a host failure. Run `make bootstrap` to
+install the locked project tools; the strict machine evidence command then
+emits a bounded path-safe snapshot including their admitted identities. The
+heavier Docker and kind behavior remains owned by `make verify-runtime`.
 
 Ordinary bootstrap uses the committed required checksums. The trusted maintainer
 workflow for deliberately updating pinned tools is documented only in

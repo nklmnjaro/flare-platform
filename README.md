@@ -11,7 +11,8 @@ instead of reimplementing them.
 
 ## Current scope
 
-- Linux amd64 developer/CI bootstrap.
+- Capability-verified Linux x86_64 local developer environment; exact host
+  package versions are not a support proxy.
 - Project-local tool state under a guarded, non-symlink `.platform/` directory.
 - GitHub-first CI with immutable action references and least-privilege permissions.
 - Disposable `kind` cluster with an isolated project kubeconfig.
@@ -23,6 +24,8 @@ instead of reimplementing them.
 
 Remote infrastructure, production Kubernetes, GitOps, cloud provisioning, and Poker-specific runtime
 integration are intentionally out of scope until separately authorized.
+Hosted CI adapters are defined, but their external runner behavior has not yet
+been replayed and is not claimed by the local capability profile.
 
 The prior local promotion record remains historical evidence. Independent
 review revoked present promotion for candidate `f2107559`; the bounded
@@ -34,6 +37,7 @@ promotion can be claimed again.
 ```bash
 make doctor
 make bootstrap       # ordinary install from the committed checksum lock
+make environment-evidence
 make hooks
 make prove-local
 make check-fast
@@ -46,11 +50,15 @@ only while intentionally changing pinned tool versions, reviews the resulting
 `aqua.yaml` and `aqua-checksums.json` diff together, and then repeats
 `make bootstrap` and `CI=true make bootstrap`.
 
-`make bootstrap` needs outbound HTTPS for first-time tool acquisition. CI
-refuses an unlocked Aqua configuration. `make verify` additionally needs a
-working Docker daemon. Tool and runtime state is kept under `.platform/`;
-writers reject symlinked directory and file targets before mutation. Use
-`make diagnose` for a bounded deterministic evidence ZIP.
+`make doctor` is a fast, non-destructive capability check. It distinguishes
+host prerequisites, Docker reachability, and project bootstrap state;
+`make environment-evidence` prints the same bounded machine-readable
+observation without workstation paths or broad environment data. `make
+bootstrap` needs outbound HTTPS for first-time tool acquisition. CI refuses an
+unlocked Aqua configuration. `make verify-runtime` retains the heavier Docker
+build and disposable-kind proofs. Tool and runtime state is kept under
+`.platform/`; writers reject symlinked directory and file targets before
+mutation. Use `make diagnose` for a bounded deterministic evidence ZIP.
 
 Aqua-managed commands are admitted only from the guarded project state below
 `.platform/aqua`; same-named external PATH tools are never a fallback. This

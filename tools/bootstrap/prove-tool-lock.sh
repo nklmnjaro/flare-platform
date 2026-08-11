@@ -49,15 +49,28 @@ prepare_bootstrap_fixture() {
   cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${target}/tools/bootstrap/"
   cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
-    "${target}/tools/bootstrap/aqua-trust.sh"
-  cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
-  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
+    "${PLATFORM_ROOT}/tools/bootstrap/environment-profile.sh" \
+    "${target}/tools/bootstrap/"
+  cp "${PLATFORM_ROOT}/tools/common/env.sh" \
+    "${PLATFORM_ROOT}/tools/common/process-state.sh" \
+    "${PLATFORM_ROOT}/tools/common/state.sh" \
+    "${PLATFORM_ROOT}/tools/common/tooling.sh" "${target}/tools/common/"
   cat >"${target}/fake-bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${AQUA_CURL_MARKER:-}" ]]; then
-  printf 'invoked\n' >"${AQUA_CURL_MARKER}"
-fi
+case "${1:-}:${2:-}" in
+  --version:)
+    printf 'curl 9.0.0 fixture\nProtocols: http https\n'
+    exit 0
+    ;;
+  --help:all)
+    printf '%s\n' --fail --location --proto --proto-redir --tlsv1.2 \
+      --connect-timeout --max-time --max-filesize --retry \
+      --retry-connrefused --output --silent --show-error
+    exit 0
+    ;;
+esac
+[[ -z "${AQUA_CURL_MARKER:-}" ]] || printf 'invoked\n' >"${AQUA_CURL_MARKER}"
 printf 'fixture curl denied\n' >&2
 exit 70
 FAKE

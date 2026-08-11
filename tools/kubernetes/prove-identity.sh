@@ -133,6 +133,66 @@ prove_build_env_contract() {
     runtime_identity_require_source "$(printf '9%.0s' {1..40})" "$(printf '3%.0s' {1..40})"
 }
 
+prove_buildkit_result_contract() {
+  local valid="${PROOF_DIRECTORY}/buildkit-valid.log"
+  local empty="${PROOF_DIRECTORY}/buildkit-empty.log"
+  local duplicate="${PROOF_DIRECTORY}/buildkit-duplicate.log"
+  local uppercase="${PROOF_DIRECTORY}/buildkit-uppercase.log"
+  local wrong_prefix="${PROOF_DIRECTORY}/buildkit-wrong-prefix.log"
+  local wrong_suffix="${PROOF_DIRECTORY}/buildkit-wrong-suffix.log"
+  local result="sha256:${SHA_A}"
+  printf '#1 preparing build\n#12 writing image %s done\n' "${result}" >"${valid}"
+  printf '#1 preparing build\n' >"${empty}"
+  printf '#12 writing image %s done\n#13 writing image %s done\n' \
+    "${result}" "${result}" >"${duplicate}"
+  printf '#12 writing image sha256:%s done\n' "${SHA_A^^}" >"${uppercase}"
+  printf 'prefix #12 writing image %s done\n' "${result}" >"${wrong_prefix}"
+  printf '#12 writing image %s done suffix\n' "${result}" >"${wrong_suffix}"
+
+  if [[ "$(buildkit_result_config_id "${valid}")" != "${result}" ||
+  "$(runtime_identity_extract_build_result_id "${valid}")" != "${result}" ]]; then
+    printf 'FAIL  runtime-id    canonical BuildKit result was not consumed exactly\n' >&2
+    return 1
+  fi
+  expect_identity_failure missing-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${empty}"
+  expect_identity_failure duplicate-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${duplicate}"
+  expect_identity_failure uppercase-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${uppercase}"
+  expect_identity_failure prefixed-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${wrong_prefix}"
+  expect_identity_failure suffixed-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${wrong_suffix}"
+  printf 'PASS  runtime-id    exact shared BuildKit result grammar proved\n'
+}
+
+prove_reference_buildkit_result_contract() (
+  local valid="${PROOF_DIRECTORY}/reference-buildkit-valid.log"
+  local duplicate="${PROOF_DIRECTORY}/reference-buildkit-duplicate.log"
+  local result="sha256:${SHA_A}"
+  source "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh"
+  printf '#12 writing image %s done\n' "${result}" >"${valid}"
+  printf '#12 writing image %s done\n#13 writing image %s done\n' \
+    "${result}" "${result}" >"${duplicate}"
+  if [[ "$(extract_result_config_id "${valid}")" != "${result}" ]]; then
+    printf 'FAIL  reference-build canonical BuildKit result was not consumed exactly\n' >&2
+    return 1
+  fi
+  expect_identity_failure duplicate-reference-buildkit-result 1 \
+    'FAIL  reference-build expected exactly one BuildKit result config identity' \
+    extract_result_config_id "${duplicate}"
+  expect_identity_failure buildkit-inspect-mismatch 1 \
+    'FAIL  reference-build proof BuildKit result differs from inspected config identity' \
+    require_result_matches_inspect proof "${result}" "sha256:${SHA_B}"
+  printf 'PASS  reference-build shared BuildKit parser and inspect comparison proved\n'
+)
+
 write_context_manifest_fixture() {
   local context="$1" manifest="$2"
   local dockerfile_sha server_sha
@@ -405,6 +465,8 @@ main() {
   trap 'rm -rf -- "${PROOF_DIRECTORY}"' EXIT
   prove_identity_response_reds
   prove_build_env_contract
+  prove_buildkit_result_contract
+  prove_reference_buildkit_result_contract
   prove_context_file_hash_reds
   prove_git_source_snapshot
   prove_docker_input_stream_red

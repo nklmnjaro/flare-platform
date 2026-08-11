@@ -53,9 +53,12 @@ prove_unlocked_ci() {
   cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${directory}/tools/bootstrap/"
   cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
-    "${directory}/tools/bootstrap/aqua-trust.sh"
-  cp "${PLATFORM_ROOT}/tools/common/env.sh" "${directory}/tools/common/env.sh"
-  cp "${PLATFORM_ROOT}/tools/common/state.sh" "${directory}/tools/common/state.sh"
+    "${PLATFORM_ROOT}/tools/bootstrap/environment-profile.sh" \
+    "${directory}/tools/bootstrap/"
+  cp "${PLATFORM_ROOT}/tools/common/env.sh" \
+    "${PLATFORM_ROOT}/tools/common/process-state.sh" \
+    "${PLATFORM_ROOT}/tools/common/state.sh" \
+    "${PLATFORM_ROOT}/tools/common/tooling.sh" "${directory}/tools/common/"
   sed 's/^  require_checksum: true$/  require_checksum: false/' \
     "${PLATFORM_ROOT}/aqua.yaml" >"${directory}/aqua.yaml"
   grep -Fqx '  require_checksum: false' "${directory}/aqua.yaml"
@@ -276,6 +279,7 @@ prove_red_marker_guard() {
 }
 
 prove_local_gates() {
+  "${PLATFORM_ROOT}/tools/bootstrap/prove-environment.sh"
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"

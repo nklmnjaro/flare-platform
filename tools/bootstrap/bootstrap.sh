@@ -171,6 +171,7 @@ main() {
   enforce_ci_checksum_policy || return
   install_aqua || return
   (cd "${PLATFORM_ROOT}" && "${AQUA_BIN}" install) || return
+  verify_existing_aqua_proxy bootstrap || return
   printf 'PASS  bootstrap     pinned tools installed under %s\n' "${AQUA_ROOT_DIR}"
 }
 

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/process-state.sh"
+# shellcheck source=buildkit-result.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/buildkit-result.sh"
 
 RUNTIME_IDENTITY_BOUNDARY_STATUS=73
 RUNTIME_IDENTITY_MISMATCH_STATUS=74
@@ -446,15 +448,12 @@ runtime_identity_verify_build_log_files() {
 
 runtime_identity_extract_build_result_id() {
   local log="$1"
-  local -a results=()
-  mapfile -t results < <(sed -n \
-    's/^.*writing image \(sha256:[0-9a-f]\{64\}\) done$/\1/p' "${log}")
-  if [[ "${#results[@]}" -ne 1 ||
-    ! "${results[0]:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  local result
+  if ! result="$(buildkit_result_config_id "${log}")"; then
     printf 'FAIL  runtime-id    malformed Docker build result identity\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  printf '%s\n' "${results[0]}"
+  printf '%s\n' "${result}"
 }
 
 runtime_identity_process_or_group_exists() {
