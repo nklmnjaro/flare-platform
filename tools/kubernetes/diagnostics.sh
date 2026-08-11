@@ -4,9 +4,7 @@ set -euo pipefail
 DIAGNOSTICS_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "${DIAGNOSTICS_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
   DIAGNOSTICS_SOURCE_DIR=.
-builtin source "${DIAGNOSTICS_SOURCE_DIR}/../common/env.sh"
-builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
-builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin source "${DIAGNOSTICS_SOURCE_DIR}/ownership.sh"
 builtin unset DIAGNOSTICS_SOURCE_DIR
 
 MAX_CAPTURE_BYTES=131072
@@ -45,6 +43,8 @@ main() {
   reset_state_directory "diagnostics/raw/kubernetes" || return
   "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh" >/dev/null
 
+  capture checkout-identity platform_checkout_identity
+  capture ownership ownership_read_snapshot
   capture nodes kubectl_command 20s get nodes -o wide
   capture resources kubectl_command 20s -n "${PLATFORM_NAMESPACE}" get all -o wide
   capture events kubectl_command 20s -n "${PLATFORM_NAMESPACE}" \
@@ -52,7 +52,7 @@ main() {
   capture describe-pods kubectl_command 25s -n "${PLATFORM_NAMESPACE}" describe pods
   capture logs kubectl_command 20s -n "${PLATFORM_NAMESPACE}" \
     logs deployment/platform-reference --all-pods=true --tail=200 --timestamps=true
-  printf 'INFO  diagnostics   %s\n' "${DIAGNOSTICS_TARGET}"
+  printf 'INFO  diagnostics   bounded Kubernetes captures recorded\n'
 }
 
 main "$@"

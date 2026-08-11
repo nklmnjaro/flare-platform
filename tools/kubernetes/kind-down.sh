@@ -3,27 +3,21 @@ set -euo pipefail
 
 KIND_DOWN_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "${KIND_DOWN_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || KIND_DOWN_SOURCE_DIR=.
-builtin source "${KIND_DOWN_SOURCE_DIR}/../common/env.sh"
-builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
-builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
-unset KIND_DOWN_SOURCE_DIR
+builtin source "${KIND_DOWN_SOURCE_DIR}/ownership.sh"
+builtin unset KIND_DOWN_SOURCE_DIR
 
 export_owned_cluster() {
-  prepare_kubeconfig_output
+  prepare_kubeconfig_output || return
   if ! kind_command 30s export kubeconfig --name "${PLATFORM_CLUSTER_NAME}" \
-    --kubeconfig "${KUBECONFIG}"; then
-    run_host_command rm -f -- "${KUBECONFIG}"
+    --kubeconfig "${KUBECONFIG}" >/dev/null; then
     return 1
   fi
-  run_host_command chmod 600 "${KUBECONFIG}"
-  if ! "${PLATFORM_ROOT}/tools/kubernetes/guard-ownership.sh"; then
-    run_host_command rm -f -- "${KUBECONFIG}"
-    return 1
-  fi
+  run_host_command chmod 600 "${KUBECONFIG}" || return
+  ownership_current_checkout_snapshot
 }
 
 main() {
-  local presence
+  local presence ownership_snapshot
   local if_present=false
   [[ "${1:-}" == "--if-present" ]] && if_present=true
   if [[ $# -gt 1 || ($# -eq 1 && "${1:-}" != "--if-present") ]]; then
@@ -50,7 +44,11 @@ main() {
 
   require_tool kubectl
   umask 077
-  export_owned_cluster
+  ownership_snapshot="$(export_owned_cluster)" || {
+    printf 'WARN  kind-down     kubeconfig retained for safe diagnosis\n' >&2
+    return 1
+  }
+  ownership_recheck_snapshot "${ownership_snapshot}" >/dev/null
   kind_command 120s delete cluster --name "${PLATFORM_CLUSTER_NAME}"
 
   presence="$(cluster_presence)"
