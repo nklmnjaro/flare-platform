@@ -2,8 +2,8 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/aqua-trust.sh"
 
-AQUA_BIN="${PLATFORM_STATE_DIR}/bootstrap/aqua"
 CHECKSUM_FILE="${PLATFORM_ROOT}/aqua-checksums.json"
 LOCK_BACKUP_DIR=""
 LOCK_COMPLETE=false
@@ -43,12 +43,7 @@ set_require_checksum() {
 }
 
 main() {
-  ensure_state_directory "" || return
-  prepare_state_file "bootstrap/aqua" >/dev/null || return
-  if [[ ! -x "${AQUA_BIN}" ]]; then
-    printf 'FAIL  tool-lock     Aqua is not bootstrapped; run make bootstrap first.\n' >&2
-    return 2
-  fi
+  verify_existing_aqua "tool-lock" || return
 
   LOCK_BACKUP_DIR="$(mktemp -d "${PLATFORM_STATE_DIR}/tool-lock.XXXXXX")"
   cp "${AQUA_CONFIG}" "${LOCK_BACKUP_DIR}/aqua.yaml"

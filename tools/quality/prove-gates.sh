@@ -52,6 +52,8 @@ prove_unlocked_ci() {
   mkdir -p "${directory}/tools/bootstrap" "${directory}/tools/common"
   cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${directory}/tools/bootstrap/"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${directory}/tools/bootstrap/aqua-trust.sh"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${directory}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${directory}/tools/common/state.sh"
   sed 's/^  require_checksum: true$/  require_checksum: false/' \

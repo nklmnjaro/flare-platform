@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || exit 1
+source "$(dirname -- "${BASH_SOURCE[0]}")/aqua-trust.sh" || exit 1
 
 WORK_DIR=""
 
@@ -12,6 +13,7 @@ write_fake_aqua() {
 #!/usr/bin/env bash
 set -euo pipefail
 case "\$1" in
+  version) printf '${AQUA_VERSION}\\n' ;;
   update-checksum) printf '{"fixture":true}\\n' >aqua-checksums.json ;;
   install) exit ${install_status} ;;
   *) exit 2 ;;
@@ -22,13 +24,18 @@ FAKE
 
 write_marker_aqua() {
   local target="$1"
-  cat >"${target}" <<'FAKE'
+  cat >"${target}" <<FAKE
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'executed\n' >"${AQUA_RED_MARKER:?}"
-case "${1:-}" in
-  version) printf '2.62.3\n' ;;
-  *) exit 0 ;;
+printf 'executed:%s\n' "\${1:-}" >>"\${AQUA_RED_MARKER:?}"
+case "\${1:-}" in
+  version) printf '${AQUA_VERSION}\n' ;;
+  update-checksum)
+    printf '{"checksums":[{"id":"hostile","checksum":"00","algorithm":"sha256"}]}\n' \
+      >aqua-checksums.json
+    ;;
+  install) ;;
+  *) exit 2 ;;
 esac
 FAKE
   chmod +x "${target}"
@@ -41,6 +48,8 @@ prepare_bootstrap_fixture() {
   cp "${PLATFORM_ROOT}/aqua.yaml" "${target}/aqua.yaml"
   cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${target}/tools/bootstrap/"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${target}/tools/bootstrap/aqua-trust.sh"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
   cat >"${target}/fake-bin/curl" <<'FAKE'
@@ -157,23 +166,140 @@ prepare_fixture() {
   mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
     "${target}/.platform/bootstrap"
   cp "${PLATFORM_ROOT}/aqua.yaml" "${target}/aqua.yaml"
+  cp "${PLATFORM_ROOT}/aqua-checksums.json" \
+    "${target}/aqua-checksums.json"
+  cp "${PLATFORM_ROOT}/Makefile" "${target}/Makefile"
   cp "${PLATFORM_ROOT}/tools/common/env.sh" "${target}/tools/common/env.sh"
   cp "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/state.sh"
   cp "${PLATFORM_ROOT}/tools/bootstrap/lock-tools.sh" \
     "${target}/tools/bootstrap/lock-tools.sh"
+  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${target}/tools/bootstrap/aqua-trust.sh"
+}
+
+pin_fixture_aqua() {
+  local target="$1"
+  local module="${target}/tools/bootstrap/aqua-trust.sh"
+  local temporary="${module}.new"
+  local digest
+  digest="$(sha256sum -- "${target}/.platform/bootstrap/aqua")"
+  digest="${digest%% *}"
+  sed -E \
+    "s/^(readonly AQUA_BIN_SHA256=\")[0-9a-f]{64}(\")$/\\1${digest}\\2/" \
+    "${module}" >"${temporary}"
+  grep -Fqx "readonly AQUA_BIN_SHA256=\"${digest}\"" "${temporary}"
+  mv "${temporary}" "${module}"
+}
+
+prove_untrusted_tool_lock_rejection() {
+  local target="$1"
+  local marker="${target}/.platform/FAKE_AQUA_EXECUTED"
+  local output="${target}/tool-lock.out"
+  local status=0
+  prepare_fixture "${target}"
+  write_marker_aqua "${target}/.platform/bootstrap/aqua"
+  cp "${target}/aqua.yaml" "${target}/aqua.before"
+  cp "${target}/aqua-checksums.json" "${target}/checksums.before"
+  cp "${target}/.platform/bootstrap/aqua" "${target}/aqua-bin.before"
+  (
+    cd "${target}"
+    AQUA_RED_MARKER="${marker}" make --no-print-directory tool-lock
+  ) >"${output}" 2>&1 || status=$?
+  if [[ "${status}" == "0" ]]; then
+    printf 'FAIL  tool-lock-red forged Aqua unexpectedly passed\n' >&2
+    return 1
+  fi
+  grep -Fq 'cached Aqua integrity mismatch' "${output}"
+  if [[ -e "${marker}" ]]; then
+    printf 'FAIL  tool-lock-red forged Aqua was executed\n' >&2
+    return 1
+  fi
+  cmp "${target}/aqua.before" "${target}/aqua.yaml"
+  cmp "${target}/checksums.before" "${target}/aqua-checksums.json"
+  cmp "${target}/aqua-bin.before" "${target}/.platform/bootstrap/aqua"
+  [[ -z "$(find "${target}/.platform" -maxdepth 1 \
+    -name 'tool-lock.*' -print -quit)" ]]
+  printf 'PASS  tool-lock-red forged Aqua rejected before execution or mutation\n'
+}
+
+prove_inherited_verifier_cannot_bypass() {
+  local target="$1"
+  local marker="${target}/.platform/INHERITED_FUNCTION_EXECUTED"
+  local output="${target}/tool-lock.out"
+  local status=0
+  prepare_fixture "${target}"
+  write_marker_aqua "${target}/.platform/bootstrap/aqua"
+  cp "${target}/aqua.yaml" "${target}/aqua.before"
+  cp "${target}/aqua-checksums.json" "${target}/checksums.before"
+  (
+    cd "${target}"
+    # Invoked only after export in the child process under test.
+    # shellcheck disable=SC2329
+    verify_existing_aqua() {
+      printf 'verify_existing_aqua\n' >>"${AQUA_RED_MARKER:?}"
+      return 0
+    }
+    export -f verify_existing_aqua
+    AQUA_RED_MARKER="${marker}" make --no-print-directory tool-lock
+  ) >"${output}" 2>&1 || status=$?
+  if ((status == 0)); then
+    printf 'FAIL  tool-lock-red inherited verifier bypassed canonical trust\n' >&2
+    return 1
+  fi
+  grep -Fq 'cached Aqua integrity mismatch' "${output}"
+  if [[ -e "${marker}" ]]; then
+    printf 'FAIL  tool-lock-red inherited verifier or forged Aqua executed\n' >&2
+    return 1
+  fi
+  cmp "${target}/aqua.before" "${target}/aqua.yaml"
+  cmp "${target}/checksums.before" "${target}/aqua-checksums.json"
+  printf 'PASS  tool-lock-red inherited verifier cannot bypass canonical trust\n'
+}
+
+prove_nonexecutable_tool_lock_rejection() {
+  local target="$1"
+  local marker="${target}/.platform/FAKE_AQUA_EXECUTED"
+  local output="${target}/tool-lock.out"
+  local mode_before
+  local status=0
+  prepare_fixture "${target}"
+  write_marker_aqua "${target}/.platform/bootstrap/aqua"
+  pin_fixture_aqua "${target}"
+  chmod -x "${target}/.platform/bootstrap/aqua"
+  mode_before="$(stat -c '%a' "${target}/.platform/bootstrap/aqua")"
+  cp "${target}/aqua.yaml" "${target}/aqua.before"
+  cp "${target}/aqua-checksums.json" "${target}/checksums.before"
+  (
+    cd "${target}"
+    AQUA_RED_MARKER="${marker}" make --no-print-directory tool-lock
+  ) >"${output}" 2>&1 || status=$?
+  if [[ "${status}" == "0" ]]; then
+    printf 'FAIL  tool-lock-red non-executable Aqua unexpectedly passed\n' >&2
+    return 1
+  fi
+  grep -Fq 'cached Aqua is not executable' "${output}"
+  [[ ! -e "${marker}" ]]
+  cmp "${target}/aqua.before" "${target}/aqua.yaml"
+  cmp "${target}/checksums.before" "${target}/aqua-checksums.json"
+  [[ "$(stat -c '%a' "${target}/.platform/bootstrap/aqua")" == "${mode_before}" ]]
+  [[ -z "$(find "${target}/.platform" -maxdepth 1 \
+    -name 'tool-lock.*' -print -quit)" ]]
+  printf 'PASS  tool-lock-red non-executable Aqua rejected before mutation\n'
 }
 
 prove_rollback() {
   local target="$1"
   prepare_fixture "${target}"
   cp "${target}/aqua.yaml" "${target}/aqua.before"
+  cp "${target}/aqua-checksums.json" "${target}/checksums.before"
   write_fake_aqua "${target}/.platform/bootstrap/aqua" 9
+  pin_fixture_aqua "${target}"
   if (cd "${target}" && tools/bootstrap/lock-tools.sh >/dev/null 2>&1); then
     printf 'FAIL  tool-lock-red failure fixture unexpectedly passed\n' >&2
     return 1
   fi
   cmp "${target}/aqua.before" "${target}/aqua.yaml"
-  [[ ! -e "${target}/aqua-checksums.json" ]]
+  cmp "${target}/checksums.before" "${target}/aqua-checksums.json"
   printf 'PASS  tool-lock-red failed update restored prior state\n'
 }
 
@@ -181,6 +307,7 @@ prove_success() {
   local target="$1"
   prepare_fixture "${target}"
   write_fake_aqua "${target}/.platform/bootstrap/aqua" 0
+  pin_fixture_aqua "${target}"
   (cd "${target}" && tools/bootstrap/lock-tools.sh >/dev/null)
   grep -Fqx '  require_checksum: true' "${target}/aqua.yaml"
   [[ -s "${target}/aqua-checksums.json" ]]
@@ -215,6 +342,9 @@ main() {
   prove_fake_cached_aqua "${WORK_DIR}/fake-cache"
   prove_symlink_cached_aqua "${WORK_DIR}/symlink-cache"
   prove_nonregular_cached_aqua "${WORK_DIR}/nonregular-cache"
+  prove_untrusted_tool_lock_rejection "${WORK_DIR}/untrusted-tool-lock"
+  prove_inherited_verifier_cannot_bypass "${WORK_DIR}/inherited-tool-lock"
+  prove_nonexecutable_tool_lock_rejection "${WORK_DIR}/nonexec-tool-lock"
   prove_rollback "${WORK_DIR}/rollback"
   prove_success "${WORK_DIR}/success"
   prove_proxy_resolution "${WORK_DIR}/proxy"
