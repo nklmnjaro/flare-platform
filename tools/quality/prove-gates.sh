@@ -1,8 +1,22 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+PROVE_GATES_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${PROVE_GATES_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  PROVE_GATES_SOURCE_DIR=.
+builtin source "${PROVE_GATES_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+unset PROVE_GATES_SOURCE_DIR
+
+PROVE_GATES_BASH_PATH="$(host_command_path bash)" || exit
+PROVE_GATES_ENV_PATH="$(host_command_path env)" || exit
+PROVE_GATES_SLEEP_PATH="$(host_command_path sleep)" || exit
+readonly PROVE_GATES_BASH_PATH PROVE_GATES_ENV_PATH PROVE_GATES_SLEEP_PATH
+
+KUBE_CONTEXT_DOCKER_CONTRACT=flare-platform-docker-target-fixture-v1
+KUBE_CONTEXT_DOCKER_TOKEN=prove-gates-docker-owner-v1
+KUBE_CONTEXT_RUNTIME_CONTRACT=flare-platform-runtime-fixture-v1
+KUBE_CONTEXT_RUNTIME_TOKEN=prove-gates-runtime-owner-v1
 
 prove_commit_policy() {
   local directory="${PLATFORM_STATE_DIR}/commit-policy"
@@ -49,22 +63,119 @@ prove_commit_policy() {
 prove_unlocked_ci() {
   local directory="${PLATFORM_STATE_DIR}/aqua-ci-unlocked"
   reset_state_directory "aqua-ci-unlocked" || return
-  mkdir -p "${directory}/tools/bootstrap" "${directory}/tools/common"
-  cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
+  run_host_command mkdir -p \
+    "${directory}/tools/bootstrap" "${directory}/tools/common"
+  run_host_command cp "${PLATFORM_ROOT}/tools/bootstrap/bootstrap.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" "${directory}/tools/bootstrap/"
-  cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+  run_host_command cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
     "${PLATFORM_ROOT}/tools/bootstrap/environment-profile.sh" \
     "${directory}/tools/bootstrap/"
-  cp "${PLATFORM_ROOT}/tools/common/env.sh" \
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/docker-target.sh" \
+    "${PLATFORM_ROOT}/tools/common/env.sh" \
+    "${PLATFORM_ROOT}/tools/common/host-commands.sh" \
     "${PLATFORM_ROOT}/tools/common/process-state.sh" \
     "${PLATFORM_ROOT}/tools/common/state.sh" \
     "${PLATFORM_ROOT}/tools/common/tooling.sh" "${directory}/tools/common/"
-  sed 's/^  require_checksum: true$/  require_checksum: false/' \
+  run_host_command sed 's/^  require_checksum: true$/  require_checksum: false/' \
     "${PLATFORM_ROOT}/aqua.yaml" >"${directory}/aqua.yaml"
-  grep -Fqx '  require_checksum: false' "${directory}/aqua.yaml"
+  run_host_command grep -Fqx '  require_checksum: false' "${directory}/aqua.yaml"
   expect_failure_with_marker aqua-ci-unlocked 1 \
-    'CI requires committed Aqua checksums.' 30s env CI=true \
+    'CI requires committed Aqua checksums.' 30s \
+    "${PROVE_GATES_ENV_PATH}" CI=true \
     "${directory}/tools/bootstrap/bootstrap.sh"
+}
+
+copy_kube_context_fixture() {
+  local target="$1"
+  run_host_command mkdir -p \
+    "${target}/tools/bootstrap" "${target}/tools/common" \
+    "${target}/tools/kubernetes" "${target}/.platform/bootstrap" \
+    "${target}/.platform/aqua/bin" \
+    "${target}/.platform/aqua/test-fixtures" \
+    "${target}/.platform-test/docker-target"
+  run_host_command cp "${PLATFORM_ROOT}/aqua.yaml" \
+    "${PLATFORM_ROOT}/aqua-checksums.json" "${target}/"
+  run_host_command cp "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh" \
+    "${target}/tools/bootstrap/aqua-trust.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/env.sh" \
+    "${PLATFORM_ROOT}/tools/common/host-commands.sh" \
+    "${PLATFORM_ROOT}/tools/common/process-state.sh" \
+    "${PLATFORM_ROOT}/tools/common/state.sh" "${target}/tools/common/"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
+    "${target}/tools/common/tooling-production.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/managed-tool-fixture.sh" \
+    "${target}/tools/common/tooling.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/docker-target.sh" \
+    "${target}/tools/common/docker-target-production.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/docker-target-fixture.sh" \
+    "${target}/tools/common/docker-target.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh" \
+    "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh" \
+    "${target}/tools/kubernetes/"
+  printf '%s\n' "${KUBE_CONTEXT_DOCKER_TOKEN}" \
+    >"${target}/.platform-test/docker-target/.docker-target-owner"
+  printf '%s\n' "${KUBE_CONTEXT_RUNTIME_TOKEN}" \
+    >"${target}/.platform/aqua/test-fixtures/.runtime-fixture-owner"
+  printf 'fixture\n' >"${target}/.platform/kubeconfig"
+}
+
+write_kube_context_fixture_commands() {
+  local target="$1"
+  run_host_command tee "${target}/.platform-test/docker-target/docker" \
+    >/dev/null <<'MOCK'
+#!/bin/bash -p
+set -euo pipefail
+printf 'executed:%s\n' "$*" >"${KUBE_CONTEXT_DOCKER_MARKER:?}"
+exit 97
+MOCK
+  run_host_command tee "${target}/.platform/aqua/test-fixtures/kubectl" \
+    >/dev/null <<'MOCK'
+#!/bin/bash -p
+set -euo pipefail
+printf '%s\n' "$*" >>"${KUBE_CONTEXT_KUBECTL_LOG:?}"
+if [[ "$*" == *"config current-context"* ]]; then
+  printf 'kind-unrelated\n'
+  exit 0
+fi
+exit 2
+MOCK
+  run_host_command chmod 0755 \
+    "${target}/.platform-test/docker-target/docker" \
+    "${target}/.platform/aqua/test-fixtures/kubectl"
+}
+
+prove_kube_context_guard() {
+  local target="${PLATFORM_STATE_DIR}/kube-context-proof"
+  local docker_marker="${target}/docker.executed"
+  local kubectl_log="${target}/kubectl.log"
+  local output="${target}/guard.out" status
+  reset_state_directory kube-context-proof || return
+  copy_kube_context_fixture "${target}" || return
+  write_kube_context_fixture_commands "${target}" || return
+  if run_host_command env \
+    PLATFORM_DOCKER_TEST_CONTRACT="${KUBE_CONTEXT_DOCKER_CONTRACT}" \
+    PLATFORM_DOCKER_TEST_ROOT="${target}/.platform-test/docker-target" \
+    PLATFORM_DOCKER_TEST_TOKEN="${KUBE_CONTEXT_DOCKER_TOKEN}" \
+    PLATFORM_RUNTIME_TEST_CONTRACT="${KUBE_CONTEXT_RUNTIME_CONTRACT}" \
+    PLATFORM_RUNTIME_TEST_ROOT="${target}/.platform/aqua/test-fixtures" \
+    PLATFORM_RUNTIME_TEST_TOKEN="${KUBE_CONTEXT_RUNTIME_TOKEN}" \
+    PLATFORM_TEST_CURRENT_CONTEXT=kind-flare-platform-dev \
+    KUBE_CONTEXT_DOCKER_MARKER="${docker_marker}" \
+    KUBE_CONTEXT_KUBECTL_LOG="${kubectl_log}" \
+    "${target}/tools/kubernetes/guard-context.sh" >"${output}" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ]] || ! run_host_command grep -Fqx \
+    'FAIL  kube-guard    expected kind-flare-platform-dev, got kind-unrelated' \
+    "${output}" || ! run_host_command grep -Fq -- 'config current-context' \
+    "${kubectl_log}" || [[ -e "${docker_marker}" ]]; then
+    run_host_command sed -n '1,20p' "${output}" >&2 || true
+    printf 'FAIL  kube-red       isolated current-context guard proof failed\n' >&2
+    return 1
+  fi
+  printf 'PASS  kube-red       production context override is absent\n'
 }
 
 expect_helper_status() {
@@ -85,34 +196,41 @@ expect_helper_status() {
 assert_evidence_hygiene() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
   local file size
-  if find "${evidence_dir}" -maxdepth 1 \
+  if run_host_command find "${evidence_dir}" -maxdepth 1 \
     \( -name '.*.raw' -o -name '.*.render.*' -o -name '.*.bound.*' -o \
     -name '.*.status.*' \) \
-    -print -quit | grep -q .; then
+    -print -quit | run_host_command grep -q .; then
     printf 'FAIL  red-marker    transient evidence file survived\n' >&2
     return 1
   fi
   while IFS= read -r file; do
-    size="$(wc -c <"${file}")"
+    size="$(run_host_command wc -c <"${file}")"
     if ((size > EVIDENCE_MAX_FILE_BYTES)); then
       printf 'FAIL  red-marker    oversized durable evidence: %s\n' "${file}" >&2
       return 1
     fi
-  done < <(find "${evidence_dir}" -maxdepth 1 -type f -name '*.txt' -print)
+  done < <(run_host_command find \
+    "${evidence_dir}" -maxdepth 1 -type f -name '*.txt' -print)
 }
 
 prove_marker_semantics() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
   expect_helper_status missing-marker "${EVIDENCE_MISSING_MARKER}" \
     expect_failure_with_marker marker-guard 7 expected-marker 5s \
-    bash -c 'printf "unrelated-output\n"; exit 7'
+    "${PROVE_GATES_BASH_PATH}" -p -c \
+    'printf "unrelated-output\n"; exit 7'
   expect_helper_status wrong-status "${EVIDENCE_WRONG_STATUS}" \
     expect_failure_with_marker status-guard 7 expected-marker 5s \
-    bash -c 'printf "expected-marker\n"; exit 8'
-  grep -Fqx 'actual_status=7' "${evidence_dir}/marker-guard.txt"
-  grep -Fqx 'marker_observed=false' "${evidence_dir}/marker-guard.txt"
-  grep -Fqx 'actual_status=8' "${evidence_dir}/status-guard.txt"
-  grep -Fqx 'marker_observed=true' "${evidence_dir}/status-guard.txt"
+    "${PROVE_GATES_BASH_PATH}" -p -c \
+    'printf "expected-marker\n"; exit 8'
+  run_host_command grep -Fqx 'actual_status=7' \
+    "${evidence_dir}/marker-guard.txt"
+  run_host_command grep -Fqx 'marker_observed=false' \
+    "${evidence_dir}/marker-guard.txt"
+  run_host_command grep -Fqx 'actual_status=8' \
+    "${evidence_dir}/status-guard.txt"
+  run_host_command grep -Fqx 'marker_observed=true' \
+    "${evidence_dir}/status-guard.txt"
 }
 
 prove_literal_redaction() {
@@ -122,9 +240,12 @@ prove_literal_redaction() {
   # The positional argument expands in the fixture shell.
   # shellcheck disable=SC2016
   PLATFORM_ROOT="${special_root}" expect_failure_with_marker special-path 7 marker 5s \
-    bash -c 'printf "%s marker\n" "$1"; exit 7' _ "${special_root}"
-  grep -Fq '<REPO> marker' "${evidence_dir}/special-path.txt"
-  if grep -Fq "${special_root}" "${evidence_dir}/special-path.txt"; then
+    "${PROVE_GATES_BASH_PATH}" -p -c \
+    'printf "%s marker\n" "$1"; exit 7' _ "${special_root}"
+  run_host_command grep -Fq '<REPO> marker' \
+    "${evidence_dir}/special-path.txt"
+  if run_host_command grep -Fq \
+    "${special_root}" "${evidence_dir}/special-path.txt"; then
     printf 'FAIL  red-marker    special repository path was retained\n' >&2
     return 1
   fi
@@ -133,10 +254,13 @@ prove_literal_redaction() {
     # The positional argument expands in the fixture shell.
     # shellcheck disable=SC2016
     expect_failure_with_marker home-redaction 7 marker 5s \
-      bash -c 'printf "%s/.cache/tool marker\n" "$1"; exit 7' _ "${supported_home}"
+      "${PROVE_GATES_BASH_PATH}" -p -c \
+      'printf "%s/.cache/tool marker\n" "$1"; exit 7' _ "${supported_home}"
   )
-  grep -Fq '<HOME>/.cache/tool marker' "${evidence_dir}/home-redaction.txt"
-  if grep -Fq "${supported_home}" "${evidence_dir}/home-redaction.txt"; then
+  run_host_command grep -Fq '<HOME>/.cache/tool marker' \
+    "${evidence_dir}/home-redaction.txt"
+  if run_host_command grep -Fq \
+    "${supported_home}" "${evidence_dir}/home-redaction.txt"; then
     printf 'FAIL  red-marker    supported home path was retained\n' >&2
     return 1
   fi
@@ -145,7 +269,7 @@ prove_literal_redaction() {
 run_forced_renderer_failure() {
   PLATFORM_TEST_FORCE_EVIDENCE_RENDER_FAILURE=true \
     expect_failure_with_marker renderer-failure 7 marker 5s \
-    bash -c 'printf "marker\n"; exit 7'
+    "${PROVE_GATES_BASH_PATH}" -p -c 'printf "marker\n"; exit 7'
 }
 
 prove_renderer_and_size_bounds() {
@@ -154,116 +278,86 @@ prove_renderer_and_size_bounds() {
   printf 'retained-final\n' >"${saved_output}"
   expect_helper_status renderer-failure "${EVIDENCE_BOUNDARY_STATUS}" \
     run_forced_renderer_failure
-  grep -Fqx retained-final "${saved_output}"
+  run_host_command grep -Fqx retained-final "${saved_output}"
   expect_failure_with_marker oversized-output 124 oversize-marker 1s \
-    bash -c 'while :; do printf "oversize-marker\n"; done'
-  grep -Fqx 'raw_truncated=true' "${evidence_dir}/oversized-output.txt"
-  [[ "$(wc -c <"${evidence_dir}/oversized-output.txt")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
+    "${PROVE_GATES_BASH_PATH}" -p -c \
+    'while :; do printf "oversize-marker\n"; done'
+  run_host_command grep -Fqx 'raw_truncated=true' \
+    "${evidence_dir}/oversized-output.txt"
+  [[ "$(run_host_command wc -c \
+    <"${evidence_dir}/oversized-output.txt")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
 }
 
 prove_inherited_stdout_cleanup() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
-  local pid_file child_pid="" start elapsed proof_status=0
-  pid_file="$(mktemp "${evidence_dir}/.inherited-child.XXXXXXXX")" || return
+  local pid_file child_pid="" child_starttime="" child_state=""
+  local start elapsed proof_status=0
+  pid_file="$(run_host_command mktemp \
+    "${evidence_dir}/.inherited-child.XXXXXXXX")" || return
   start="${SECONDS}"
   # The child PID expands in the fixture shell.
   # shellcheck disable=SC2016
   expect_failure_with_marker inherited-stdout 7 inherited-marker 2s \
-    bash -c 'set -euo pipefail
-      sleep 6 &
-      printf "%s\n" "$!" >"$1"
+    "${PROVE_GATES_BASH_PATH}" -p -c 'set -euo pipefail
+      "$2" 6 &
+      child=$!
+      builtin source "$3"
+      snapshot="$(linux_process_snapshot "${child}")" || builtin exit "$4"
+      IFS=$'"'"'\t'"'"' builtin read -r \
+        observed_pid pgrp starttime kernel_state <<<"${snapshot}"
+      [[ "${observed_pid}" == "${child}" ]] || builtin exit "$4"
+      printf "%s\t%s\n" "${child}" "${starttime}" >"$1"
       printf "inherited-marker\n"
-      exit 7' _ "${pid_file}" || proof_status=$?
+      exit 7' _ "${pid_file}" "${PROVE_GATES_SLEEP_PATH}" \
+    "${PLATFORM_ROOT}/tools/common/process-state.sh" \
+    "${EVIDENCE_BOUNDARY_STATUS}" || proof_status=$?
   elapsed=$((SECONDS - start))
-  if ! IFS= read -r child_pid <"${pid_file}" || [[ ! "${child_pid}" =~ ^[0-9]+$ ]]; then
+  if ! IFS=$'\t' builtin read -r \
+    child_pid child_starttime <"${pid_file}" ||
+    ! linux_process_valid_id "${child_pid}" ||
+    [[ ! "${child_starttime}" =~ ^[0-9]+$ ]]; then
     printf 'FAIL  red-marker    inherited-output child PID was not captured\n' >&2
     proof_status=1
-  elif linux_process_is_live "${child_pid}"; then
-    kill -KILL "${child_pid}" 2>/dev/null || true
+  elif ! child_state="$(linux_process_state \
+    "${child_pid}" "${child_starttime}")"; then
+    printf 'FAIL  red-marker    inherited-output child state was not inspectable\n' >&2
+    proof_status=1
+  elif [[ "${child_state}" == live ]]; then
+    builtin kill -KILL "${child_pid}" 2>/dev/null || true
     printf 'FAIL  red-marker    inherited-output child survived capture\n' >&2
     proof_status=1
   fi
-  rm -f -- "${pid_file}" || proof_status=1
+  run_host_command rm -f -- "${pid_file}" || proof_status=1
   if ((elapsed > 3)); then
     printf 'FAIL  red-marker    inherited-output capture exceeded overall bound\n' >&2
     proof_status=1
   fi
-  grep -Fqx 'actual_status=7' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
-  grep -Fqx 'marker_observed=true' "${evidence_dir}/inherited-stdout.txt" || proof_status=1
+  run_host_command grep -Fqx 'actual_status=7' \
+    "${evidence_dir}/inherited-stdout.txt" || proof_status=1
+  run_host_command grep -Fqx 'marker_observed=true' \
+    "${evidence_dir}/inherited-stdout.txt" || proof_status=1
   [[ "${proof_status}" -eq 0 ]] || return 1
   printf 'PASS  red-marker    inherited-output child stopped without status drift\n'
 }
-
-prove_zombie_state_contract() (
-  local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
-  local pid_file parent_pid="" child_pid="" state="" attempt
-  pid_file="$(mktemp "${evidence_dir}/.zombie-child.XXXXXXXX")" || return
-  # Invoked by the EXIT trap below.
-  # shellcheck disable=SC2329
-  cleanup_zombie_fixture() {
-    trap - EXIT
-    if [[ -n "${parent_pid}" ]]; then
-      kill -CONT -- "-${parent_pid}" 2>/dev/null || true
-      kill -KILL -- "-${parent_pid}" 2>/dev/null || true
-      wait "${parent_pid}" 2>/dev/null || true
-    fi
-    rm -f -- "${pid_file}"
-  }
-  trap cleanup_zombie_fixture EXIT
-  set -m
-  # Positional arguments expand inside the delayed-reaper fixture shell.
-  # shellcheck disable=SC2016
-  bash -c 'set -euo pipefail
-    sleep 0.1 &
-    printf "%s\n" "$!" >"$1"
-    kill -STOP "$$"
-    wait' _ "${pid_file}" >/dev/null 2>&1 &
-  parent_pid=$!
-  set +m
-  for ((attempt = 1; attempt <= 50; attempt++)); do
-    if IFS= read -r child_pid <"${pid_file}" &&
-      [[ "${child_pid}" =~ ^[0-9]+$ ]]; then
-      state="$(linux_process_state "${child_pid}" 2>/dev/null)" || state=""
-      [[ "${state}" != Z ]] || break
-    fi
-    sleep 0.02
-  done
-  if [[ "${state}" != Z ]] || ! kill -0 "${child_pid}" 2>/dev/null; then
-    printf 'FAIL  process-state deterministic zombie was not observed\n' >&2
-    return 1
-  fi
-  if linux_process_is_live "${child_pid}"; then
-    printf 'FAIL  process-state zombie was misclassified as executing\n' >&2
-    return 1
-  fi
-  if ! linux_process_group_has_live_member "${parent_pid}"; then
-    printf 'FAIL  process-state stopped group leader was misclassified as dead\n' >&2
-    return 1
-  fi
-  kill -CONT -- "-${parent_pid}" 2>/dev/null || return
-  wait "${parent_pid}" || return
-  parent_pid=""
-  printf 'PASS  process-state kill-0 zombie excluded under delayed reaper\n'
-)
 
 prove_evidence_symlink_guards() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
   local raw_sentinel="${evidence_dir}/raw-sentinel"
   local final_sentinel="${evidence_dir}/final-sentinel"
   printf 'raw-safe\n' >"${raw_sentinel}"
-  ln -s raw-sentinel "${evidence_dir}/.raw-symlink.raw"
+  run_host_command ln -s raw-sentinel "${evidence_dir}/.raw-symlink.raw"
   expect_helper_status raw-symlink "${EVIDENCE_BOUNDARY_STATUS}" \
     expect_failure_with_marker raw-symlink 7 marker 5s \
-    bash -c 'printf "marker\n"; exit 7'
-  grep -Fqx raw-safe "${raw_sentinel}"
-  rm -f "${evidence_dir}/.raw-symlink.raw"
+    "${PROVE_GATES_BASH_PATH}" -p -c 'printf "marker\n"; exit 7'
+  run_host_command grep -Fqx raw-safe "${raw_sentinel}"
+  run_host_command rm -f "${evidence_dir}/.raw-symlink.raw"
   printf 'final-safe\n' >"${final_sentinel}"
-  ln -s final-sentinel "${evidence_dir}/final-symlink.txt"
+  run_host_command ln -s final-sentinel "${evidence_dir}/final-symlink.txt"
   expect_helper_status final-symlink "${EVIDENCE_BOUNDARY_STATUS}" \
     expect_failure_with_marker final-symlink 7 marker 5s \
-    bash -c 'printf "marker\n"; exit 7'
-  grep -Fqx final-safe "${final_sentinel}"
-  rm -f "${evidence_dir}/final-symlink.txt"
+    "${PROVE_GATES_BASH_PATH}" -p -c 'printf "marker\n"; exit 7'
+  run_host_command grep -Fqx final-safe "${final_sentinel}"
+  run_host_command rm -f "${evidence_dir}/final-symlink.txt"
 }
 
 prove_red_marker_guard() {
@@ -272,7 +366,6 @@ prove_red_marker_guard() {
   prove_literal_redaction
   prove_renderer_and_size_bounds
   prove_inherited_stdout_cleanup
-  prove_zombie_state_contract
   prove_evidence_symlink_guards
   assert_evidence_hygiene
   printf 'PASS  red-marker    rendering, reason, status, and bounds fail closed\n'
@@ -283,9 +376,11 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
+  "${PLATFORM_ROOT}/tools/common/prove-process-state.sh"
   "${PLATFORM_ROOT}/tools/kubernetes/prove-identity.sh"
   "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh" --self-check
   "${PLATFORM_ROOT}/tools/kubernetes/identity-negative-smoke.sh" --self-check
+  "${PLATFORM_ROOT}/tools/kubernetes/publish-runtime-evidence.sh" --self-check
   "${PLATFORM_ROOT}/tools/kubernetes/negative-smoke.sh" --self-check
   prove_red_marker_guard
   expect_failure source-line-policy run_managed_tool go run \
@@ -294,13 +389,13 @@ prove_local_gates() {
     ./tools/quality/policycheck -path tests/fixtures/policy/long-function.sh
   expect_failure go-format run_managed_tool gofmt -d \
     tests/fixtures/go/unformatted.go
-  expect_failure doctor-boundary env PLATFORM_TEST_FORCE_MISSING=curl \
+  expect_failure doctor-boundary "${PROVE_GATES_ENV_PATH}" \
+    PLATFORM_TEST_FORCE_MISSING=curl \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only
   prove_unlocked_ci
   "${PLATFORM_ROOT}/tools/bootstrap/prove-tool-lock.sh"
   "${PLATFORM_ROOT}/tools/common/prove-managed-tools.sh"
-  expect_failure kube-context env PLATFORM_TEST_CURRENT_CONTEXT=kind-unrelated \
-    "${PLATFORM_ROOT}/tools/kubernetes/guard-context.sh"
+  prove_kube_context_guard
   "${PLATFORM_ROOT}/tools/kubernetes/prove-safety.sh"
   prove_commit_policy
 }
@@ -341,9 +436,10 @@ prove_external_gates() {
     -cache "${PLATFORM_STATE_DIR}/kubeconform" \
     -kubernetes-version "${PLATFORM_KUBERNETES_SCHEMA_VERSION}" \
     -strict tests/fixtures/kubernetes/invalid-schema.yaml
-  grep -Fq "/v${PLATFORM_KUBERNETES_SCHEMA_VERSION}-standalone-strict/" \
+  run_host_command grep -Fq \
+    "/v${PLATFORM_KUBERNETES_SCHEMA_VERSION}-standalone-strict/" \
     "${PLATFORM_STATE_DIR}/gate-evidence/kube-schema.txt"
-  if grep -Fq '/master-standalone-strict/' \
+  if run_host_command grep -Fq '/master-standalone-strict/' \
     "${PLATFORM_STATE_DIR}/gate-evidence/kube-schema.txt"; then
     printf 'FAIL  kube-schema   floating master schema identity retained\n' >&2
     return 1
@@ -357,7 +453,7 @@ prove_external_gates() {
 main() {
   local local_only=false
   [[ "${1:-}" == "--local-only" ]] && local_only=true
-  cd "${PLATFORM_ROOT}"
+  builtin cd -P -- "${PLATFORM_ROOT}"
   require_tool go
   require_tool gofmt
   prove_local_gates
@@ -370,4 +466,6 @@ main() {
   printf 'PASS  prove-gates    all configured gates demonstrated RED\n'
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

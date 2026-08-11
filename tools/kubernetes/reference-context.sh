@@ -1,11 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+# Embedded awk programs intentionally use awk fields.
+# shellcheck disable=SC2016
 set -euo pipefail
 
+REFERENCE_CONTEXT_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${REFERENCE_CONTEXT_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  REFERENCE_CONTEXT_SOURCE_DIR=.
 # shellcheck source=../common/env.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || {
+builtin source "${REFERENCE_CONTEXT_SOURCE_DIR}/../common/env.sh" || {
   # shellcheck disable=SC2317
-  return 1 2>/dev/null || exit 1
+  builtin return 1 2>/dev/null || builtin exit 1
 }
+builtin unset REFERENCE_CONTEXT_SOURCE_DIR
 
 export LC_ALL=C
 
@@ -41,11 +47,11 @@ resolve_manifest_file() {
   if [[ ! -f "${manifest}" ]]; then
     context_failure 'manifest is missing or not a regular file' || return
   fi
-  parent="$(dirname -- "${manifest}")" || return
+  parent="$(run_host_command dirname -- "${manifest}")" || return
   resolved_parent="$(cd -- "${parent}" && pwd -P)" || {
     context_failure 'unable to resolve manifest parent' || return
   }
-  basename="$(basename -- "${manifest}")" || return
+  basename="$(run_host_command basename -- "${manifest}")" || return
   printf '%s/%s\n' "${resolved_parent}" "${basename}" || return
 }
 
@@ -53,9 +59,10 @@ manifest_line() {
   local context="$1"
   local name="$2"
   local mode sha size
-  mode="$(stat -c '%a' "${context}/${name}")" || return
-  size="$(stat -c '%s' "${context}/${name}")" || return
-  sha="$(sha256sum -- "${context}/${name}" | awk '{print $1}')" || return
+  mode="$(run_host_command stat -c '%a' "${context}/${name}")" || return
+  size="$(run_host_command stat -c '%s' "${context}/${name}")" || return
+  sha="$(run_host_command sha256sum -- "${context}/${name}" |
+    run_host_command awk '{print $1}')" || return
   [[ "${sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s\t0%s\t%s\t%s\n' "${name}" "${mode}" "${size}" "${sha}" || return
 }
@@ -97,12 +104,12 @@ verify_context_manifest() {
   local manifest="$2"
   local dockerfile_line manifest_bytes manifest_lines server_line
   local -a lines=()
-  manifest_bytes="$(wc -c <"${manifest}")" || return
+  manifest_bytes="$(run_host_command wc -c <"${manifest}")" || return
   if [[ "${manifest_bytes}" -gt 1024 ]]; then
     context_failure 'manifest exceeds 1024-byte boundary' || return
   fi
   mapfile -t lines <"${manifest}" || return
-  manifest_lines="$(wc -l <"${manifest}")" || return
+  manifest_lines="$(run_host_command wc -l <"${manifest}")" || return
   if [[ "${manifest_lines}" -ne 3 || "${#lines[@]}" -ne 3 ]]; then
     context_failure 'manifest must contain three newline-terminated records' || return
   fi
@@ -117,8 +124,8 @@ verify_context_manifest() {
 verify_context_modes() {
   local context="$1"
   local dockerfile_mode server_mode
-  dockerfile_mode="$(stat -c '%a' "${context}/Dockerfile")" || return
-  server_mode="$(stat -c '%a' "${context}/server")" || return
+  dockerfile_mode="$(run_host_command stat -c '%a' "${context}/Dockerfile")" || return
+  server_mode="$(run_host_command stat -c '%a' "${context}/server")" || return
   if [[ "${dockerfile_mode}" != 644 ]]; then
     context_failure 'mode mismatch: Dockerfile must be 0644' || return
   fi
@@ -144,7 +151,8 @@ verify_context() {
 context_identity_sha256() {
   local context="$1" manifest="$2" digest
   verify_context "${context}" "${manifest}" || return
-  digest="$(sha256sum -- "${manifest}" | awk '{print $1}')" || return
+  digest="$(run_host_command sha256sum -- "${manifest}" |
+    run_host_command awk '{print $1}')" || return
   if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
     context_failure 'manifest SHA-256 is malformed' || return
   fi
@@ -182,21 +190,22 @@ stage_context() {
   dockerfile_target="$(prepare_state_file "reference/context/Dockerfile")" || return
   server_target="$(prepare_state_file "reference/context/server")" || return
   manifest_target="$(prepare_state_file "reference/context.manifest.tsv")" || return
-  cp -- "${REFERENCE_DOCKERFILE}" "${dockerfile_target}" || return
-  cp -- "${server_source}" "${server_target}" || return
-  chmod 0644 "${dockerfile_target}" || return
-  chmod 0755 "${server_target}" || return
-  manifest_temporary="$(mktemp "${PLATFORM_STATE_DIR}/reference/.context-manifest.XXXXXXXX")" || return
+  run_host_command cp -- "${REFERENCE_DOCKERFILE}" "${dockerfile_target}" || return
+  run_host_command cp -- "${server_source}" "${server_target}" || return
+  run_host_command chmod 0644 "${dockerfile_target}" || return
+  run_host_command chmod 0755 "${server_target}" || return
+  manifest_temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/reference/.context-manifest.XXXXXXXX")" || return
   if ! write_manifest "${REFERENCE_CONTEXT}" "${manifest_temporary}"; then
-    rm -f -- "${manifest_temporary}" || return
+    run_host_command rm -f -- "${manifest_temporary}" || return
     return 1
   fi
   manifest_target="$(prepare_state_file "reference/context.manifest.tsv")" || {
-    rm -f -- "${manifest_temporary}" || return
+    run_host_command rm -f -- "${manifest_temporary}" || return
     return 1
   }
-  if ! mv -fT -- "${manifest_temporary}" "${manifest_target}"; then
-    rm -f -- "${manifest_temporary}" || return
+  if ! run_host_command mv -fT -- "${manifest_temporary}" "${manifest_target}"; then
+    run_host_command rm -f -- "${manifest_temporary}" || return
     return 1
   fi
   verify_context "${REFERENCE_CONTEXT}" "${REFERENCE_MANIFEST}" || return
@@ -218,10 +227,10 @@ stage_context_snapshot() {
   assert_context_identity "${source}" "${source_manifest}" "${expected}" || return
   dockerfile_target="${snapshot}/Dockerfile"
   server_target="${snapshot}/server"
-  cp -- "${source}/Dockerfile" "${dockerfile_target}" || return
-  cp -- "${source}/server" "${server_target}" || return
-  chmod 0644 "${dockerfile_target}" || return
-  chmod 0755 "${server_target}" || return
+  run_host_command cp -- "${source}/Dockerfile" "${dockerfile_target}" || return
+  run_host_command cp -- "${source}/server" "${server_target}" || return
+  run_host_command chmod 0644 "${dockerfile_target}" || return
+  run_host_command chmod 0755 "${server_target}" || return
   write_manifest "${snapshot}" "${manifest}" || return
   assert_context_identity "${snapshot}" "${manifest}" "${expected}" || return
   assert_context_identity "${source}" "${source_manifest}" "${expected}" || return
@@ -269,7 +278,8 @@ prove_context_contract() (
   local snapshot="${PLATFORM_STATE_DIR}/reference/context-snapshot-proof"
   local snapshot_manifest="${PLATFORM_STATE_DIR}/reference/context-snapshot-proof.manifest.tsv"
   local baseline_identity dockerfile server unexpected
-  trap 'rm -rf -- "${context}" "${snapshot}"; rm -f -- "${manifest}" "${snapshot_manifest}"' EXIT || return
+  trap 'run_host_command rm -rf -- "${context}" "${snapshot}"; \
+    run_host_command rm -f -- "${manifest}" "${snapshot_manifest}"' EXIT || return
   reset_state_directory "reference/context-proof" || return
   reset_state_directory "reference/context-snapshot-proof" || return
   manifest="$(prepare_state_file "reference/context-proof.manifest.tsv")" || return
@@ -281,8 +291,8 @@ prove_context_contract() (
   unexpected="$(prepare_state_file "reference/context-proof/unexpected.txt")" || return
   printf 'FROM scratch\nCOPY server /server\n' >"${dockerfile}" || return
   printf 'fixture-server\n' >"${server}" || return
-  chmod 0644 "${dockerfile}" || return
-  chmod 0755 "${server}" || return
+  run_host_command chmod 0644 "${dockerfile}" || return
+  run_host_command chmod 0755 "${server}" || return
   write_manifest "${context}" "${manifest}" || return
   verify_context "${context}" "${manifest}" || return
   baseline_identity="$(context_identity_sha256 "${context}" "${manifest}")" || return
@@ -303,12 +313,12 @@ prove_context_contract() (
   printf 'canary\n' >"${unexpected}" || return
   expect_context_failure unexpected-file \
     'FAIL  reference-context unexpected path: unexpected.txt' "${context}" "${manifest}" || return
-  rm -f -- "${unexpected}" "${server}" || return
-  ln -s Dockerfile "${server}" || return
+  run_host_command rm -f -- "${unexpected}" "${server}" || return
+  run_host_command ln -s Dockerfile "${server}" || return
   expect_context_failure symlink \
     'FAIL  reference-context symlink path: server' "${context}" "${manifest}" || return
-  rm -f -- "${server}" || return
-  mkfifo "${server}" || return
+  run_host_command rm -f -- "${server}" || return
+  run_host_command mkfifo "${server}" || return
   expect_context_failure special-file \
     'FAIL  reference-context special path: server' "${context}" "${manifest}" || return
   printf 'PASS  reference-context exact two-file context contract proved\n' || return

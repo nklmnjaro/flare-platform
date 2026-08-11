@@ -1,9 +1,20 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash -p
+# Embedded awk programs intentionally use awk fields.
+# shellcheck disable=SC2016
+builtin set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/process-state.sh"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  builtin printf 'FAIL  runtime-id    identity.sh must be sourced\n' >&2
+  builtin exit 2
+fi
+
+IDENTITY_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${IDENTITY_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || IDENTITY_SOURCE_DIR=.
+# shellcheck source=../common/process-state.sh
+builtin source "${IDENTITY_SOURCE_DIR}/../common/process-state.sh"
 # shellcheck source=buildkit-result.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/buildkit-result.sh"
+builtin source "${IDENTITY_SOURCE_DIR}/buildkit-result.sh"
+builtin unset IDENTITY_SOURCE_DIR
 
 RUNTIME_IDENTITY_BOUNDARY_STATUS=73
 RUNTIME_IDENTITY_MISMATCH_STATUS=74
@@ -17,7 +28,8 @@ runtime_identity_is_sha256() {
 }
 
 runtime_identity_hex_bytes() {
-  od -An -v -tx1 -- "$1" | tr -d '[:space:]'
+  run_host_command od -An -v -tx1 -- "$1" |
+    run_host_command tr -d '[:space:]'
 }
 
 # Stable API: print the SHA from an exact 64-lowercase-hex plus LF response.
@@ -28,7 +40,8 @@ runtime_identity_parse_response() {
     printf 'FAIL  runtime-id    malformed identity response\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
   fi
-  bytes="$(wc -c <"${response_file}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  bytes="$(run_host_command wc -c <"${response_file}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if [[ "${bytes}" -ne 65 ]]; then
     printf 'FAIL  runtime-id    malformed identity response\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
@@ -50,7 +63,8 @@ runtime_identity_parse_health_response() {
     printf 'FAIL  runtime-id    malformed health response\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
   fi
-  bytes="$(wc -c <"${response_file}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  bytes="$(run_host_command wc -c <"${response_file}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if [[ "${bytes}" -ne 3 ]]; then
     printf 'FAIL  runtime-id    malformed health response\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
@@ -91,7 +105,8 @@ runtime_identity_parse_port() {
     printf 'FAIL  runtime-id    malformed port-forward selection log\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
   fi
-  bytes="$(wc -c <"${log_file}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  bytes="$(run_host_command wc -c <"${log_file}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if ((bytes > RUNTIME_IDENTITY_MAX_PORT_LOG_BYTES)); then
     printf 'FAIL  runtime-id    malformed port-forward selection log\n' >&2
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
@@ -109,6 +124,29 @@ runtime_identity_parse_port() {
     return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
   fi
   printf '%s\n' "$((10#${port}))"
+}
+
+runtime_identity_require_selected_port_absent() {
+  local port="${1:-}" status=0
+  RUNTIME_IDENTITY_PORT_FORWARD_PORT_ABSENT=false
+  if [[ ! "${port}" =~ ^[0-9]{1,5}$ ]] ||
+    ((10#${port} < 1 || 10#${port} > 65535)); then
+    printf \
+      'FAIL  runtime-id    selected port remained reachable after port-forward cleanup\n' \
+      >&2
+    return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+  fi
+  run_host_command curl --disable --fail --silent --proto '=http' \
+    --connect-timeout 1 --max-time 1 \
+    "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1 || status=$?
+  if [[ "${status}" -eq 7 ]]; then
+    RUNTIME_IDENTITY_PORT_FORWARD_PORT_ABSENT=true
+    return 0
+  fi
+  printf \
+    'FAIL  runtime-id    selected port remained reachable after port-forward cleanup\n' \
+    >&2
+  return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
 }
 
 runtime_identity_reset_build_fields() {
@@ -195,8 +233,10 @@ runtime_identity_load_build_env() {
     printf 'FAIL  runtime-id    build identity record is missing or unsafe\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  bytes="$(wc -c <"${build_env}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  line_count="$(wc -l <"${build_env}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  bytes="$(run_host_command wc -c <"${build_env}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  line_count="$(run_host_command wc -l <"${build_env}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if ((bytes < 1 || bytes > RUNTIME_IDENTITY_MAX_BUILD_ENV_BYTES || line_count != 31)); then
     printf 'FAIL  runtime-id    malformed build identity record\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
@@ -356,22 +396,27 @@ runtime_identity_verify_context_files() {
     printf 'FAIL  runtime-id    build artifacts are missing or unsafe\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  manifest_sha="$(sha256sum -- "${manifest}" | awk '{print $1}')" ||
+  manifest_sha="$(run_host_command sha256sum -- "${manifest}" |
+    run_host_command awk '{print $1}')" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  manifest_bytes="$(wc -c <"${manifest}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  manifest_lines="$(wc -l <"${manifest}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  manifest_bytes="$(run_host_command wc -c <"${manifest}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  manifest_lines="$(run_host_command wc -l <"${manifest}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   mapfile -t lines <"${manifest}" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  dockerfile_bytes="$(stat -c '%s' "${context}/Dockerfile")" ||
+  dockerfile_bytes="$(run_host_command stat -c '%s' "${context}/Dockerfile")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  server_bytes="$(stat -c '%s' "${context}/server")" ||
+  server_bytes="$(run_host_command stat -c '%s' "${context}/server")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  dockerfile_mode="$(stat -c '%a' "${context}/Dockerfile")" ||
+  dockerfile_mode="$(run_host_command stat -c '%a' "${context}/Dockerfile")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  server_mode="$(stat -c '%a' "${context}/server")" ||
+  server_mode="$(run_host_command stat -c '%a' "${context}/server")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  dockerfile_sha="$(sha256sum -- "${context}/Dockerfile" | awk '{print $1}')" ||
+  dockerfile_sha="$(run_host_command sha256sum -- "${context}/Dockerfile" |
+    run_host_command awk '{print $1}')" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  server_sha="$(sha256sum -- "${context}/server" | awk '{print $1}')" ||
+  server_sha="$(run_host_command sha256sum -- "${context}/server" |
+    run_host_command awk '{print $1}')" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   printf -v dockerfile_line 'Dockerfile\t0%s\t%s\t%s' \
     "${dockerfile_mode}" "${dockerfile_bytes}" "${dockerfile_sha}"
@@ -392,15 +437,19 @@ runtime_identity_verify_context_files() {
 runtime_identity_verify_context_archive() (
   local context="$1" archive="" archive_bytes archive_sha entries
   ensure_state_directory reference || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  archive="$(mktemp "${PLATFORM_STATE_DIR}/reference/.context-verify.XXXXXXXX.tar")" ||
+  archive="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/reference/.context-verify.XXXXXXXX.tar")" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  trap 'rm -f -- "${archive}"' EXIT
-  tar --sort=name --format=ustar --mtime='UTC 1970-01-01' \
+  trap 'run_host_command rm -f -- "${archive}"' EXIT
+  run_host_command tar --sort=name --format=ustar --mtime='UTC 1970-01-01' \
     --owner=0 --group=0 --numeric-owner -cf "${archive}" \
     -C "${context}" Dockerfile server || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  entries="$(tar -tf "${archive}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  archive_bytes="$(stat -c '%s' "${archive}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  archive_sha="$(sha256sum -- "${archive}" | awk '{print $1}')" ||
+  entries="$(run_host_command tar -tf "${archive}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  archive_bytes="$(run_host_command stat -c '%s' "${archive}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  archive_sha="$(run_host_command sha256sum -- "${archive}" |
+    run_host_command awk '{print $1}')" ||
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if [[ "${entries}" != $'Dockerfile\nserver' ||
     "${archive_sha}" != "${RUNTIME_BUILD_CONTEXT_ARCHIVE_SHA256}" ||
@@ -427,14 +476,18 @@ runtime_identity_verify_build_log_files() {
     printf 'FAIL  runtime-id    build logs are missing or unsafe\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  first_bytes="$(stat -c '%s' "${first}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-  second_bytes="$(stat -c '%s' "${second}")" || return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  first_bytes="$(run_host_command stat -c '%s' "${first}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  second_bytes="$(run_host_command stat -c '%s' "${second}")" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   if ((first_bytes < 1 || first_bytes > 131072 || second_bytes < 1 || second_bytes > 131072)); then
     printf 'FAIL  runtime-id    build logs exceeded their evidence boundary\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  first_sha="$(sha256sum -- "${first}" | awk '{print $1}')" || return
-  second_sha="$(sha256sum -- "${second}" | awk '{print $1}')" || return
+  first_sha="$(run_host_command sha256sum -- "${first}" |
+    run_host_command awk '{print $1}')" || return
+  second_sha="$(run_host_command sha256sum -- "${second}" |
+    run_host_command awk '{print $1}')" || return
   first_result="$(runtime_identity_extract_build_result_id "${first}")" || return
   second_result="$(runtime_identity_extract_build_result_id "${second}")" || return
   if [[ "${first_sha}" != "${RUNTIME_BUILD_LOG_FIRST_SHA256}" ||
@@ -456,63 +509,144 @@ runtime_identity_extract_build_result_id() {
   printf '%s\n' "${result}"
 }
 
-runtime_identity_process_or_group_exists() {
-  local pid="$1"
-  linux_process_or_group_is_live "${pid}"
+runtime_identity_capture_group_starttime() {
+  local pid="$1" snapshot observed_pid observed_pgrp starttime kernel_state
+  if ! snapshot="$(linux_process_snapshot "${pid}")"; then
+    printf 'FAIL  runtime-id    unable to prove port-forward process-group state\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+  IFS=$'\t' builtin read -r \
+    observed_pid observed_pgrp starttime kernel_state <<<"${snapshot}"
+  if [[ "${observed_pid}" != "${pid}" || "${observed_pgrp}" != "${pid}" ]] ||
+    linux_process_terminal_kernel_state "${kernel_state}"; then
+    printf 'FAIL  runtime-id    unable to prove port-forward process-group state\n' >&2
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+  fi
+  printf '%s\n' "${starttime}"
+}
+
+runtime_identity_read_group_state() {
+  local pid="$1" starttime="$2"
+  if RUNTIME_IDENTITY_GROUP_STATE="$(linux_process_group_state \
+    "${pid}" "${starttime}")"; then
+    return 0
+  fi
+  printf 'FAIL  runtime-id    unable to prove port-forward process-group state\n' >&2
+  return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
+}
+
+runtime_identity_read_process_state() {
+  local pid="$1" starttime="$2"
+  if RUNTIME_IDENTITY_PROCESS_STATE="$(linux_process_state \
+    "${pid}" "${starttime}")"; then
+    return 0
+  fi
+  printf 'FAIL  runtime-id    unable to prove port-forward process-group state\n' >&2
+  return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
 }
 
 runtime_identity_signal_group() {
-  local signal="$1" pid="$2"
-  kill -s "${signal}" -- "-${pid}" 2>/dev/null
+  local signal="$1" pid="$2" starttime="$3"
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || return 0
+  if builtin kill -s "${signal}" -- "-${pid}" 2>/dev/null; then
+    return 0
+  fi
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  [[ "${RUNTIME_IDENTITY_GROUP_STATE}" != live ]]
 }
 
 runtime_identity_wait_tracked() {
-  wait "$1" 2>/dev/null
+  builtin wait "$1" 2>/dev/null || true
 }
 
 runtime_identity_cleanup_pause() {
-  sleep 0.1
+  run_host_command sleep 0.1
 }
 
 runtime_identity_begin_tracked_cleanup() {
   RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP=""
+  RUNTIME_IDENTITY_PORT_FORWARD_PORT_ABSENT=false
 }
 
-runtime_identity_poll_absence() {
-  local pid="$1" attempt
+runtime_identity_poll_group_nonlive() {
+  local pid="$1" starttime="$2" attempt
   for ((attempt = 1; attempt <= 10; attempt++)); do
-    runtime_identity_process_or_group_exists "${pid}" || return 0
+    runtime_identity_read_group_state "${pid}" "${starttime}" || return
+    [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || return 0
     runtime_identity_cleanup_pause
   done
-  ! runtime_identity_process_or_group_exists "${pid}"
+  return 1
 }
 
-# Stable API: bounded TERM/KILL/reap and explicit PID/process-group absence.
+runtime_identity_confirm_group_nonlive() {
+  local pid="$1" starttime="$2"
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  [[ "${RUNTIME_IDENTITY_GROUP_STATE}" != live ]] || return 1
+  runtime_identity_cleanup_pause || return
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  [[ "${RUNTIME_IDENTITY_GROUP_STATE}" != live ]]
+}
+
+# Stable API: bounded TERM/KILL, direct-child identity loss, and no live members.
 # The tracked PID must also be the process-group ID created by the caller.
 runtime_identity_stop_tracked() {
-  local pid="$1"
-  if [[ ! "${pid}" =~ ^[0-9]+$ ]] || ((pid <= 1)); then
+  local pid="$1" starttime="$2"
+  local poll_status=0 signal_status=0 confirm_status=0
+  if ! linux_process_valid_id "${pid}" || [[ ! "${starttime}" =~ ^[0-9]+$ ]] ||
+    ((pid <= 1)); then
     printf 'FAIL  runtime-id    invalid tracked port-forward PID\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
-  if runtime_identity_process_or_group_exists "${pid}"; then
-    runtime_identity_signal_group TERM "${pid}" || true
-    runtime_identity_poll_absence "${pid}" || true
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  if [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]]; then
+    runtime_identity_signal_group TERM "${pid}" "${starttime}" || signal_status=$?
+    [[ "${signal_status}" -ne "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] ||
+      return "${signal_status}"
+    runtime_identity_poll_group_nonlive \
+      "${pid}" "${starttime}" || poll_status=$?
+    [[ "${poll_status}" -ne "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] ||
+      return "${poll_status}"
   fi
-  if runtime_identity_process_or_group_exists "${pid}"; then
-    runtime_identity_signal_group KILL "${pid}" || true
-    runtime_identity_poll_absence "${pid}" || true
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  if [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]]; then
+    signal_status=0
+    runtime_identity_signal_group KILL "${pid}" "${starttime}" || signal_status=$?
+    [[ "${signal_status}" -ne "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] ||
+      return "${signal_status}"
+    poll_status=0
+    runtime_identity_poll_group_nonlive \
+      "${pid}" "${starttime}" || poll_status=$?
+    [[ "${poll_status}" -ne "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] ||
+      return "${poll_status}"
   fi
-  if runtime_identity_process_or_group_exists "${pid}"; then
+  runtime_identity_read_group_state "${pid}" "${starttime}" || return
+  if [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]]; then
     printf 'FAIL  runtime-id    port-forward process survived cleanup\n' >&2
     return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
   fi
-  runtime_identity_wait_tracked "${pid}" || true
-  if runtime_identity_process_or_group_exists "${pid}"; then
+  if ! runtime_identity_wait_tracked "${pid}"; then
+    printf 'FAIL  runtime-id    tracked port-forward child was not reaped\n' >&2
+    return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+  fi
+  runtime_identity_read_process_state "${pid}" "${starttime}" || return
+  if [[ "${RUNTIME_IDENTITY_PROCESS_STATE}" == terminal ]]; then
+    printf 'FAIL  runtime-id    tracked port-forward child was not reaped\n' >&2
+    return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+  fi
+  if [[ "${RUNTIME_IDENTITY_PROCESS_STATE}" == live ]]; then
     printf 'FAIL  runtime-id    port-forward process survived cleanup\n' >&2
     return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
   fi
-  RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP=absent
+  runtime_identity_confirm_group_nonlive \
+    "${pid}" "${starttime}" || confirm_status=$?
+  [[ "${confirm_status}" -ne "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" ]] ||
+    return "${confirm_status}"
+  if [[ "${confirm_status}" -ne 0 ]]; then
+    printf 'FAIL  runtime-id    port-forward process survived cleanup\n' >&2
+    return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
+  fi
+  RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP=no-live-members
 }
 
 runtime_identity_validate_positive_arguments() {
@@ -529,7 +663,8 @@ runtime_identity_validate_positive_arguments() {
     "${health}" != ok || "${namespace_absent}" != true ||
     ! "${selected_port}" =~ ^[0-9]{1,5}$ ||
     "${cluster_cleanup}" != deferred-to-verify-runtime ||
-    "${RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP:-}" != absent ]]; then
+    "${RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP:-}" != no-live-members ||
+    "${RUNTIME_IDENTITY_PORT_FORWARD_PORT_ABSENT:-}" != true ]]; then
     printf 'FAIL  runtime-id    refusing incomplete positive identity evidence\n' >&2
     return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   fi
@@ -544,7 +679,7 @@ runtime_identity_render_positive() {
   local source_commit="$1" source_tree="$2" worktree_clean="$3" pod_image_id="$4"
   local running_sha="$5" health="$6" selected_port="$7"
   local cluster_cleanup="$8"
-  printf 'SCHEMA=flare-platform-runtime-identity-positive-v2\n'
+  printf 'SCHEMA=flare-platform-runtime-identity-positive-v3\n'
   printf 'SOURCE_COMMIT=%s\nSOURCE_TREE=%s\n' "${source_commit}" "${source_tree}"
   printf 'SOURCE_WORKTREE_CLEAN=%s\n' "${worktree_clean}"
   printf 'BUILD_SOURCE_COMMIT=%s\n' "${RUNTIME_BUILD_SOURCE_COMMIT}"
@@ -581,8 +716,10 @@ runtime_identity_render_positive() {
   printf 'POD_IMAGE_ID_SEMANTICS=cri-reported-non-comparable-to-local-config-id\n'
   printf 'DOCKER_VS_POD_COMPARABLE=false\n'
   printf 'RUNNING_EXECUTABLE_SHA256=%s\nHEALTH_RESPONSE=%s\n' "${running_sha}" "${health}"
-  printf 'SELECTED_IPV4_PORT=%s\nPORT_FORWARD_CLEANUP=absent\n' "${selected_port}"
-  printf 'PORT_FORWARD_PID_ABSENT=true\nNAMESPACE_ABSENT=true\n'
+  printf 'SELECTED_IPV4_PORT=%s\nPORT_FORWARD_CLEANUP=no-live-members\n' \
+    "${selected_port}"
+  printf 'PORT_FORWARD_PORT_ABSENT=true\nPORT_FORWARD_PID_ABSENT=true\n'
+  printf 'NAMESPACE_ABSENT=true\n'
   printf 'CLUSTER_CLEANUP=%s\n' "${cluster_cleanup}"
 }
 
@@ -593,14 +730,15 @@ runtime_identity_publish_positive() {
   local target temporary status=0
   runtime_identity_validate_positive_arguments "$@" || return
   target="$(prepare_state_file 'runtime-identity/positive.env')" || return
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.positive.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.positive.XXXXXXXX")" || return
   runtime_identity_render_positive "${source_commit}" "${source_tree}" "${worktree_clean}" "${pod_image_id}" \
     "${running_sha}" "${health}" "${selected_port}" "${cluster_cleanup}" \
     >"${temporary}" || status=$?
   prepare_state_file 'runtime-identity/positive.env' >/dev/null || status=$?
   if ((status == 0)); then
-    mv -fT -- "${temporary}" "${target}" || status=$?
+    run_host_command mv -fT -- "${temporary}" "${target}" || status=$?
   fi
-  [[ "${status}" -eq 0 ]] || rm -f -- "${temporary}"
+  [[ "${status}" -eq 0 ]] || run_host_command rm -f -- "${temporary}"
   return "${status}"
 }

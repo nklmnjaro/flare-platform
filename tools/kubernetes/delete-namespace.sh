@@ -1,9 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+DELETE_NAMESPACE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${DELETE_NAMESPACE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  DELETE_NAMESPACE_SOURCE_DIR=.
+builtin source "${DELETE_NAMESPACE_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin unset DELETE_NAMESPACE_SOURCE_DIR
 
 namespace_presence() {
   local output
@@ -33,7 +37,7 @@ main() {
       printf 'PASS  namespace     %s removed\n' "${PLATFORM_NAMESPACE}"
       return 0
     fi
-    sleep 1
+    run_host_command sleep 1
   done
   printf 'FAIL  namespace     cleanup exceeded bounded poll window\n' >&2
   return 1

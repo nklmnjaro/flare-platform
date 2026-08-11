@@ -1,11 +1,18 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 
 # Source-only, capability-based verification environment profile.
 # Callers must source env.sh and tooling.sh first.
 
-ENVIRONMENT_PROFILE_SCHEMA="flare-platform-environment-v1"
+ENVIRONMENT_PROFILE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${ENVIRONMENT_PROFILE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  ENVIRONMENT_PROFILE_SOURCE_DIR=.
+# shellcheck source=../common/docker-target.sh
+builtin source "${ENVIRONMENT_PROFILE_SOURCE_DIR}/../common/docker-target.sh"
+unset ENVIRONMENT_PROFILE_SOURCE_DIR
+
+ENVIRONMENT_PROFILE_SCHEMA="flare-platform-environment-v2"
 ENVIRONMENT_PROFILE_MAX_EVIDENCE_BYTES=8192
-ENVIRONMENT_PROFILE_EVIDENCE_RECORD_COUNT=28
+ENVIRONMENT_PROFILE_EVIDENCE_RECORD_COUNT=35
 
 ENVIRONMENT_PROFILE_OS=""
 ENVIRONMENT_PROFILE_ARCHITECTURE=""
@@ -23,7 +30,6 @@ ENVIRONMENT_PROFILE_KIND_IDENTITY=""
 ENVIRONMENT_PROFILE_KUBECTL_IDENTITY=""
 ENVIRONMENT_PROFILE_COMMAND_PATH=""
 ENVIRONMENT_PROFILE_INSTALLED_TOOL_PATH=""
-ENVIRONMENT_PROFILE_INSTALLED_TOOL_PROXY=""
 ENVIRONMENT_PROFILE_EXPECTED_TOOL_SHA256=""
 ENVIRONMENT_PROFILE_OWNED_WORKSPACE=""
 ENVIRONMENT_PROFILE_OWNED_TOKEN=""
@@ -49,21 +55,15 @@ environment_profile_is_forced_missing() {
 
 environment_profile_resolve_command() {
   local command_name="$1"
-  local command_path="" command_type=""
-  if ! environment_profile_is_forced_missing "${command_name}"; then
-    command_type="$(builtin type -t -- "${command_name}" 2>/dev/null || true)"
-    command_path="$(builtin type -P -- "${command_name}" 2>/dev/null || true)"
-  fi
-  if [[ -n "${command_type}" && "${command_type}" != file ]]; then
-    environment_profile_fail host-command \
-      "${command_name} is shadowed by shell ${command_type}"
-    return
-  fi
-  if [[ -z "${command_path}" || ! -f "${command_path}" ||
-    ! -x "${command_path}" ]]; then
+  local command_path=""
+  if environment_profile_is_forced_missing "${command_name}"; then
     environment_profile_fail host-command "${command_name} missing"
     return
   fi
+  # Preserve the host-command boundary status and its exact reason.  Collapsing
+  # it to a generic profile failure would make callers unable to distinguish a
+  # missing capability from an untrusted path resolution.
+  command_path="$(host_command_path "${command_name}")" || return
   ENVIRONMENT_PROFILE_COMMAND_PATH="${command_path}"
 }
 
@@ -80,6 +80,12 @@ environment_profile_sanitize_child_environment() {
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
   unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_CONFIG_GLOBAL
   unset GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
+  unset GIT_CONFIG_PARAMETERS GIT_EXTERNAL_DIFF GIT_DIFF_OPTS
+  unset GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=core.fsmonitor
+  export GIT_CONFIG_VALUE_0=false
   unset MAKEFILES MAKEFLAGS MFLAGS GNUMAKEFLAGS MAKELEVEL
   unset TAR_OPTIONS GZIP
 }
@@ -233,7 +239,7 @@ environment_profile_check_core_utilities() (
   local od_path="${11}" rm_path="${12}"
   local work="" token="" removable rm_trusted=false
   # Invoked indirectly by the EXIT trap below.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cleanup_core_utility_fixture() {
     if [[ -n "${work}" && "${rm_trusted}" == true ]]; then
       environment_profile_remove_owned_workspace \
@@ -319,10 +325,11 @@ environment_profile_check_file_utilities() {
   # The variable expands only inside the isolated Bash process.
   # shellcheck disable=SC2016
   output="$("${ENVIRONMENT_PROFILE_HOST_PATHS[env]}" FLARE_HOST_PROBE=ready \
-    "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}" -c 'printf "%s\n" "$FLARE_HOST_PROBE"')" || return
+    "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}" -p -c \
+    'printf "%s\n" "$FLARE_HOST_PROBE"')" || return
   [[ "${output}" == ready ]] || return
   output="$("${ENVIRONMENT_PROFILE_HOST_PATHS[env]}" -S \
-    "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]} -c 'printf \"env-s-ready\\n\"'")" || return
+    "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]} -p -c 'printf \"env-s-ready\\n\"'")" || return
   [[ "${output}" == env-s-ready ]] || return
   repo="${work}/repo"
   "${ENVIRONMENT_PROFILE_HOST_PATHS[mkdir]}" -- "${repo}" || return
@@ -366,7 +373,7 @@ environment_profile_check_curl() {
   local fail=false location=false proto=false proto_redir=false tls=false
   local connect=false max_time=false max_filesize=false retry=false
   local retry_connrefused=false output_file=false silent=false show_error=false
-  output="$("${curl_path}" --version 2>&1)" || {
+  output="$("${curl_path}" --disable --version 2>&1)" || {
     environment_profile_fail curl-capability "unable to query curl identity"
     return
   }
@@ -387,7 +394,7 @@ environment_profile_check_curl() {
     environment_profile_fail curl-capability "HTTP/HTTPS protocols are unavailable"
     return
   fi
-  help="$("${curl_path}" --help all 2>&1)" || {
+  help="$("${curl_path}" --disable --help all 2>&1)" || {
     environment_profile_fail curl-capability "unable to query curl option surface"
     return
   }
@@ -438,7 +445,7 @@ environment_profile_check_platform() {
 environment_profile_check_bash() {
   local bash_path="$1"
   local output first_line capability
-  output="$("${bash_path}" --version 2>&1)" || {
+  output="$("${bash_path}" --version -p 2>&1)" || {
     environment_profile_fail bash-capability "unable to query GNU Bash"
     return
   }
@@ -453,7 +460,7 @@ environment_profile_check_bash() {
   fi
   # The capability program expands only in the isolated Bash under test.
   # shellcheck disable=SC2016
-  capability="$("${bash_path}" -c '
+  capability="$("${bash_path}" -p -c '
 set -euo pipefail
 set -m
 coproc ENV_PROFILE_COPROC { printf "coproc-ready\n"; }
@@ -590,7 +597,7 @@ environment_profile_check_timeout() {
     return
   fi
   "${timeout_path}" --foreground --signal=TERM --kill-after=0.1s 0.1s \
-    "${bash_path}" -c 'trap "" TERM; while :; do :; done' \
+    "${bash_path}" -p -c 'trap "" TERM; while :; do :; done' \
     >/dev/null 2>&1 || status=$?
   if [[ "${status}" -ne 137 ]]; then
     environment_profile_fail timeout-capability \
@@ -599,7 +606,7 @@ environment_profile_check_timeout() {
   fi
   status=0
   "${timeout_path}" --foreground --signal=TERM --kill-after=0.1s 0.1s \
-    "${bash_path}" -c 'trap "exit 0" TERM; while :; do :; done' \
+    "${bash_path}" -p -c 'trap "exit 0" TERM; while :; do :; done' \
     >/dev/null 2>&1 || status=$?
   if [[ "${status}" -ne 124 ]]; then
     environment_profile_fail timeout-capability \
@@ -630,38 +637,143 @@ environment_profile_read_proc_stat() {
 }
 
 environment_profile_prove_process_group() (
-  local sleep_path="$1" child="" fields group status=0
+  local sleep_path="$1" timeout_path="$2" bash_path="$3"
+  local child="" snapshot observed_pid group starttime kernel_state
+  local group_state status=0 ready release_read_fd="" release_write_fd=""
   # Invoked by the EXIT trap below.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cleanup_environment_process() {
     trap - EXIT
-    [[ -z "${child}" ]] || kill -KILL -- "-${child}" 2>/dev/null || true
+    [[ -z "${release_read_fd}" ]] ||
+      builtin exec {release_read_fd}<&- 2>/dev/null || true
+    [[ -z "${release_write_fd}" ]] ||
+      builtin exec {release_write_fd}>&- 2>/dev/null || true
+    if [[ -n "${child}" && -n "${starttime:-}" ]]; then
+      snapshot="$(linux_process_snapshot "${child}" 2>/dev/null || true)"
+      IFS=$'\t' read -r observed_pid group _ kernel_state <<<"${snapshot}"
+      if [[ "${observed_pid}" == "${child}" && "${group}" == "${child}" &&
+        "${snapshot}" == *$'\t'"${starttime}"$'\t'* ]]; then
+        kill -KILL -- "-${child}" 2>/dev/null || true
+      fi
+    fi
     [[ -z "${child}" ]] || wait "${child}" 2>/dev/null || true
   }
   trap cleanup_environment_process EXIT
-  set -m
-  "${sleep_path}" infinity &
-  child=$!
-  fields="$(linux_process_read_stat "${child}")" || status=$?
-  group="${fields#* }"
-  if [[ "${status}" -ne 0 || "${group}" != "${child}" ]] ||
-    ! linux_process_group_has_live_member "${child}"; then
+
+  # A zero-returning name can otherwise be snapshotted in the short interval
+  # between fork and exit.  GNU timeout has already been proved immediately
+  # before this boundary; require the candidate to remain blocking for the
+  # whole bounded observation before creating a process group around it.
+  "${timeout_path}" --foreground --signal=TERM --kill-after=0.1s 0.1s \
+    "${sleep_path}" infinity >/dev/null 2>&1 || status=$?
+  if [[ "${status}" -ne 124 ]]; then
     environment_profile_fail process-state \
       "spawned job process-group visibility is unavailable"
     return 1
   fi
-  kill -KILL -- "-${child}" 2>/dev/null || return
+
+  # The coprocess gives the parent an explicit start gate.  The first record
+  # proves that the new job-control group is scheduled and waiting; the second
+  # proves that the release was consumed immediately before exec.
+  set -m
+  coproc ENVIRONMENT_PROFILE_GROUP_PROBE {
+    builtin printf 'ready\n'
+    IFS= builtin read -r ready || builtin exit 70
+    [[ "${ready}" == flare-platform-process-release-v1 ]] || builtin exit 70
+    builtin printf 'released\n'
+    builtin exec "${sleep_path}" infinity
+  }
+  child="${ENVIRONMENT_PROFILE_GROUP_PROBE_PID}"
+  release_read_fd="${ENVIRONMENT_PROFILE_GROUP_PROBE[0]}"
+  release_write_fd="${ENVIRONMENT_PROFILE_GROUP_PROBE[1]}"
+  IFS= builtin read -r ready <&"${release_read_fd}" || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  [[ "${ready}" == ready ]] || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  snapshot="$(linux_process_snapshot "${child}")" || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  IFS=$'\t' read -r observed_pid group starttime kernel_state <<<"${snapshot}"
+  if [[ "${observed_pid}" != "${child}" || "${group}" != "${child}" ]] ||
+    linux_process_terminal_kernel_state "${kernel_state}"; then
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  fi
+  builtin printf 'flare-platform-process-release-v1\n' \
+    >&"${release_write_fd}" || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  IFS= builtin read -r ready <&"${release_read_fd}" || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  [[ "${ready}" == released ]] || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  builtin exec {release_read_fd}<&-
+  builtin exec {release_write_fd}>&-
+  release_read_fd=""
+  release_write_fd=""
+
+  # Observe the same leader identity on both sides of an independent bounded
+  # scheduling interval.  This rules out treating a release-edge snapshot as
+  # proof that the requested long-lived group actually stayed live.
+  status=0
+  "${timeout_path}" --foreground --signal=TERM --kill-after=0.1s 0.05s \
+    "${bash_path}" -p -c 'while :; do :; done' \
+    >/dev/null 2>&1 || status=$?
+  if [[ "${status}" -ne 124 ]]; then
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  fi
+  snapshot="$(linux_process_snapshot "${child}")" || {
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  }
+  IFS=$'\t' read -r observed_pid group ready kernel_state <<<"${snapshot}"
+  if [[ "${observed_pid}" != "${child}" || "${group}" != "${child}" ||
+    "${ready}" != "${starttime}" ]] ||
+    linux_process_terminal_kernel_state "${kernel_state}"; then
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  fi
+  if ! kill -KILL -- "-${child}" 2>/dev/null; then
+    environment_profile_fail process-state \
+      "spawned job process-group visibility is unavailable"
+    return 1
+  fi
   wait "${child}" 2>/dev/null || true
-  if linux_process_or_group_is_live "${child}"; then
+  group_state="$(linux_process_group_state "${child}" "${starttime}")" || return
+  if [[ "${group_state}" == live ]]; then
     environment_profile_fail process-state \
       "spawned job process group remained live after reap"
     return 1
   fi
+  group_state="$(linux_process_group_state "${child}" "${starttime}")" || return
+  [[ "${group_state}" != live ]] || return 1
   child=""
 )
 
 environment_profile_check_proc() {
   local proc_root="${1:-/proc}" sleep_path="${2:-}"
+  local timeout_path="${3:-}" bash_path="${4:-}"
   environment_profile_read_proc_stat "${proc_root}" || return
   if [[ "${proc_root}" == /proc ]]; then
     if ! linux_process_state "$$" >/dev/null; then
@@ -669,8 +781,10 @@ environment_profile_check_proc() {
         "shared Linux process-state parser cannot inspect the current shell"
       return
     fi
-    [[ -n "${sleep_path}" ]] || return 2
-    environment_profile_prove_process_group "${sleep_path}" || return
+    [[ -n "${sleep_path}" && -n "${timeout_path}" && -n "${bash_path}" ]] ||
+      return 2
+    environment_profile_prove_process_group \
+      "${sleep_path}" "${timeout_path}" "${bash_path}" || return
   fi
 }
 
@@ -689,7 +803,7 @@ environment_profile_validate_docker_api() {
 environment_profile_check_docker_build_help() {
   local response="$1"
   local line
-  local buildx=false stdin_context=false network=false pull=false
+  local builder=false buildx=false stdin_context=false network=false pull=false
   local no_cache=false progress=false progress_next=false
   if ((${#response} > 16384)); then
     environment_profile_fail docker-build "help response exceeded 16384 bytes"
@@ -698,6 +812,7 @@ environment_profile_check_docker_build_help() {
   while IFS= read -r line; do
     [[ "${line}" == *'docker buildx build'* ]] && buildx=true
     [[ "${line}" == *'PATH | URL | -'* ]] && stdin_context=true
+    [[ "${line}" =~ (^|[[:space:]])--builder([[:space:]]|$) ]] && builder=true
     [[ "${line}" =~ (^|[[:space:]])--network([[:space:]]|$) ]] && network=true
     [[ "${line}" =~ (^|[[:space:]])--pull([[:space:]]|$) ]] && pull=true
     [[ "${line}" =~ (^|[[:space:]])--no-cache([[:space:]]|$) ]] && no_cache=true
@@ -715,6 +830,10 @@ environment_profile_check_docker_build_help() {
   done <<<"${response}"
   [[ "${buildx}" == true ]] || {
     environment_profile_fail docker-build "BuildKit buildx response is absent"
+    return
+  }
+  [[ "${builder}" == true ]] || {
+    environment_profile_fail docker-build '--builder=default is unavailable'
     return
   }
   [[ "${stdin_context}" == true ]] || {
@@ -767,9 +886,9 @@ environment_profile_check_docker_local_help() {
 
 environment_profile_check_buildkit_parser() (
   local mkdir_path="$1" rm_path="$2" work token log expected observed module
-  module="$(dirname -- "${BASH_SOURCE[0]}")/../kubernetes/buildkit-result.sh"
+  module="${PLATFORM_ROOT}/tools/kubernetes/buildkit-result.sh"
   # shellcheck source=../kubernetes/buildkit-result.sh
-  source "${module}" || {
+  builtin source "${module}" || {
     environment_profile_fail buildkit-result \
       "shared BuildKit result parser module is unavailable"
     return
@@ -797,63 +916,66 @@ environment_profile_check_buildkit_parser() (
   work=""
 )
 
-environment_profile_check_docker() {
+environment_profile_run_docker_capability() {
+  local duration="$1" docker_path="$2" timeout_path="$3"
+  shift 3
+  if [[ "${DOCKER_TARGET_ADMITTED}" == true &&
+    "${docker_path}" == "${DOCKER_TARGET_DOCKER_PATH}" ]]; then
+    docker_target_run_bounded "${duration}" "${docker_path}" "$@"
+    return
+  fi
+  "${timeout_path}" --foreground --kill-after=2s "${duration}" \
+    "${docker_path}" "$@"
+}
+
+environment_profile_check_docker_capabilities() {
   local docker_path="$1"
   local timeout_path="$2"
   local mkdir_path="$3" rm_path="$4"
-  local identity extra build_help inspect_help remove_help
-  local identity_format
+  local identity build_help inspect_help remove_help
+  local identity_format identity_pattern
   identity_format='{{.Client.Version}}|{{.Server.Version}}|'
   identity_format+='{{.Client.APIVersion}}|{{.Server.APIVersion}}|'
   identity_format+='{{.Server.Os}}|{{.Server.Arch}}'
-  identity="$("${timeout_path}" --foreground --kill-after=2s 15s \
-    "${docker_path}" version --format "${identity_format}" \
+  identity="$(environment_profile_run_docker_capability 15s \
+    "${docker_path}" "${timeout_path}" version --format "${identity_format}" \
     2>/dev/null)" || {
     environment_profile_fail docker-daemon "Docker daemon is unreachable within 15s"
     return
   }
-  if [[ "${identity}" == *$'\n'* || "${identity}" == *$'\r'* ||
-    "${identity}" == *$'\t'* ]]; then
+  identity_pattern='^([0-9]+\.[0-9]+\.[0-9]+)\|'
+  identity_pattern+='([0-9]+\.[0-9]+\.[0-9]+)\|'
+  identity_pattern+='([0-9]+\.[0-9]+)\|([0-9]+\.[0-9]+)\|(linux)\|(amd64)$'
+  if [[ ! "${identity}" =~ ${identity_pattern} ]]; then
     environment_profile_fail docker-daemon "Docker identity response is malformed"
     return
   fi
-  IFS='|' read -r ENVIRONMENT_PROFILE_DOCKER_CLIENT_VERSION \
-    ENVIRONMENT_PROFILE_DOCKER_SERVER_VERSION \
-    ENVIRONMENT_PROFILE_DOCKER_CLIENT_API \
-    ENVIRONMENT_PROFILE_DOCKER_SERVER_API docker_os docker_arch extra \
-    <<<"${identity}" || true
-  if [[ -n "${extra}" ]] ||
-    ! environment_profile_validate_docker_version \
-      "${ENVIRONMENT_PROFILE_DOCKER_CLIENT_VERSION}" ||
-    ! environment_profile_validate_docker_version \
-      "${ENVIRONMENT_PROFILE_DOCKER_SERVER_VERSION}" ||
-    ! environment_profile_validate_docker_api \
-      "${ENVIRONMENT_PROFILE_DOCKER_CLIENT_API}" ||
-    ! environment_profile_validate_docker_api \
-      "${ENVIRONMENT_PROFILE_DOCKER_SERVER_API}"; then
-    environment_profile_fail docker-daemon "Docker identity response is malformed"
-    return
-  fi
+  ENVIRONMENT_PROFILE_DOCKER_CLIENT_VERSION="${BASH_REMATCH[1]}"
+  ENVIRONMENT_PROFILE_DOCKER_SERVER_VERSION="${BASH_REMATCH[2]}"
+  ENVIRONMENT_PROFILE_DOCKER_CLIENT_API="${BASH_REMATCH[3]}"
+  ENVIRONMENT_PROFILE_DOCKER_SERVER_API="${BASH_REMATCH[4]}"
+  docker_os="${BASH_REMATCH[5]}"
+  docker_arch="${BASH_REMATCH[6]}"
   if [[ "${docker_os}" != linux || "${docker_arch}" != amd64 ]]; then
     environment_profile_fail docker-daemon \
       "daemon requires linux/amd64; observed ${docker_os}/${docker_arch}"
     return
   fi
-  build_help="$(DOCKER_BUILDKIT=1 "${timeout_path}" --foreground \
-    --kill-after=2s 10s "${docker_path}" build --help 2>&1)" || {
+  build_help="$(environment_profile_run_docker_capability 10s \
+    "${docker_path}" "${timeout_path}" build --help 2>&1)" || {
     environment_profile_fail docker-build "unable to query BuildKit build surface"
     return
   }
   environment_profile_check_docker_build_help "${build_help}" || return
   environment_profile_check_buildkit_parser "${mkdir_path}" "${rm_path}" || return
-  inspect_help="$("${timeout_path}" --foreground --kill-after=2s 10s \
-    "${docker_path}" image inspect --help 2>&1)" || {
+  inspect_help="$(environment_profile_run_docker_capability 10s \
+    "${docker_path}" "${timeout_path}" image inspect --help 2>&1)" || {
     environment_profile_fail docker-local \
       "unable to query local image inspect surface"
     return
   }
-  remove_help="$("${timeout_path}" --foreground --kill-after=2s 10s \
-    "${docker_path}" image rm --help 2>&1)" || {
+  remove_help="$(environment_profile_run_docker_capability 10s \
+    "${docker_path}" "${timeout_path}" image rm --help 2>&1)" || {
     environment_profile_fail docker-local \
       "unable to query local image removal surface"
     return
@@ -861,15 +983,22 @@ environment_profile_check_docker() {
   environment_profile_check_docker_local_help "${inspect_help}" "${remove_help}"
 }
 
-environment_profile_verify_aqua_state() {
-  if [[ "${PROJECT_AQUA_VERIFIED}" != true ]]; then
-    verify_existing_aqua environment >/dev/null 2>&1 || {
-      environment_profile_fail project-state \
-        "Aqua state is partial or untrusted; run make bootstrap"
-      return
-    }
-    PROJECT_AQUA_VERIFIED=true
+environment_profile_check_docker() {
+  local requested_path="$1"
+  docker_target_ensure || return
+  if [[ "${requested_path}" != "${DOCKER_TARGET_DOCKER_PATH}" ]]; then
+    docker_target_fail 'Docker capability check did not receive the admitted executable'
+    return
   fi
+  environment_profile_check_docker_capabilities "$@"
+}
+
+environment_profile_verify_aqua_state() {
+  verify_existing_aqua environment >/dev/null 2>&1 || {
+    environment_profile_fail project-state \
+      "Aqua state is partial or untrusted; run make bootstrap"
+    return
+  }
 }
 
 environment_profile_read_aqua_identities() {
@@ -878,10 +1007,9 @@ environment_profile_read_aqua_identities() {
   local output package version registry extra
   local kind_count=0 kubectl_count=0
   environment_profile_verify_aqua_state || return
-  output="$(AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-    "${timeout_path}" --foreground \
-    --kill-after=2s 10s "${AQUA_BIN}" --config "${AQUA_CONFIG}" list -i \
-    2>/dev/null)" || {
+  [[ "${timeout_path}" == "${AQUA_TRUST_TIMEOUT}" ]] || return 1
+  output="$(run_project_aqua_observation_bounded 10s \
+    "${observation_root}" --config "${AQUA_CONFIG}" list -i 2>/dev/null)" || {
     environment_profile_fail project-state "unable to read trusted Aqua package identities"
     return
   }
@@ -1012,15 +1140,15 @@ environment_profile_resolve_installed_tool() {
     kind | kubectl) ;;
     *) return 2 ;;
   esac
-  managed_tool_path "${command_name}" >/dev/null || {
+  require_tool "${command_name}" >/dev/null || {
     environment_profile_fail project-tool \
       "managed ${command_name} proxy is absent or untrusted"
     return
   }
-  ENVIRONMENT_PROFILE_INSTALLED_TOOL_PROXY="${MANAGED_TOOL_PATH}"
-  output="$(AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-    "${timeout_path}" --foreground --kill-after=2s 10s "${AQUA_BIN}" \
-    --config "${AQUA_CONFIG}" which "${command_name}" 2>/dev/null)" || {
+  [[ "${timeout_path}" == "${AQUA_TRUST_TIMEOUT}" ]] || return 1
+  output="$(run_project_aqua_observation_bounded 10s \
+    "${observation_root}" --config "${AQUA_CONFIG}" \
+    which "${command_name}" 2>/dev/null)" || {
     environment_profile_fail project-tool \
       "installed ${command_name} identity is absent"
     return
@@ -1066,28 +1194,23 @@ environment_profile_prepare_aqua_observation() {
       "project Aqua registry or package state is unsafe"
     return
   fi
-  mkdir -- "${observation_root}/registry-cache" "${observation_root}/metadata" \
+  run_host_command mkdir -- "${observation_root}/registry-cache" \
+    "${observation_root}/metadata" \
     "${observation_root}/temp" || return
-  ln -s -- "${AQUA_ROOT_DIR}/registries" \
+  run_host_command ln -s -- "${AQUA_ROOT_DIR}/registries" \
     "${observation_root}/registries" || return
-  ln -s -- "${AQUA_ROOT_DIR}/pkgs" "${observation_root}/pkgs" || return
+  run_host_command ln -s -- "${AQUA_ROOT_DIR}/pkgs" \
+    "${observation_root}/pkgs" || return
 }
 
 environment_profile_query_project_tool() {
-  local timeout_path="$1" proxy_path="$2" observation_root="$3"
-  local command_name="$4"
+  local command_name="$1"
   case "${command_name}" in
     kind)
-      AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-        "${timeout_path}" --foreground --kill-after=2s 10s \
-        env AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-        "${proxy_path}" version
+      run_managed_tool_bounded 10s kind version
       ;;
     kubectl)
-      AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-        "${timeout_path}" --foreground --kill-after=2s 10s \
-        env AQUA_ROOT_DIR="${observation_root}" AQUA_DISABLE_LAZY_INSTALL=true \
-        "${proxy_path}" version --client=true -o json
+      run_managed_tool_bounded 10s kubectl version --client=true -o json
       ;;
     *) return 2 ;;
   esac
@@ -1095,7 +1218,7 @@ environment_profile_query_project_tool() {
 
 environment_profile_observe_project_tools() (
   local timeout_path="$1" sha256sum_path="$2" checksum_lock="$3"
-  local observation_root token kind_path kubectl_path kind_proxy kubectl_proxy
+  local observation_root token kind_path kubectl_path
   local kind_output kubectl_output production_root="${AQUA_ROOT_DIR}"
   environment_profile_create_owned_workspace \
     aqua "${ENVIRONMENT_PROFILE_TRUSTED_MKDIR_PATH}" || return
@@ -1112,22 +1235,16 @@ environment_profile_observe_project_tools() (
     "${timeout_path}" kind "${observation_root}" "${production_root}" \
     "${checksum_lock}" "${sha256sum_path}" || return
   kind_path="${ENVIRONMENT_PROFILE_INSTALLED_TOOL_PATH}"
-  kind_proxy="${ENVIRONMENT_PROFILE_INSTALLED_TOOL_PROXY}"
   environment_profile_resolve_installed_tool \
     "${timeout_path}" kubectl "${observation_root}" "${production_root}" \
     "${checksum_lock}" "${sha256sum_path}" || return
   kubectl_path="${ENVIRONMENT_PROFILE_INSTALLED_TOOL_PATH}"
-  kubectl_proxy="${ENVIRONMENT_PROFILE_INSTALLED_TOOL_PROXY}"
   [[ -n "${kind_path}" && -n "${kubectl_path}" ]] || return
-  kind_output="$(environment_profile_query_project_tool \
-    "${timeout_path}" "${kind_proxy}" "${observation_root}" kind \
-    2>/dev/null)" || {
+  kind_output="$(environment_profile_query_project_tool kind 2>/dev/null)" || {
     environment_profile_fail project-tool "managed kind identity command failed"
     return
   }
-  kubectl_output="$(environment_profile_query_project_tool \
-    "${timeout_path}" "${kubectl_proxy}" "${observation_root}" kubectl \
-    2>/dev/null)" || {
+  kubectl_output="$(environment_profile_query_project_tool kubectl 2>/dev/null)" || {
     environment_profile_fail project-tool "managed kubectl identity command failed"
     return
   }
@@ -1228,10 +1345,11 @@ environment_profile_run() {
     "${tar_path}" "${stat_path}" "${od_path}" \
     "${mkdir_path}" "${rm_path}" "${chmod_path}" "${cmp_path}" || return
   environment_profile_check_timeout "${timeout_path}" "${bash_path}" || return
-  environment_profile_check_proc /proc "${sleep_path}" || return
+  environment_profile_check_proc \
+    /proc "${sleep_path}" "${timeout_path}" "${bash_path}" || return
   [[ "${base_only}" != true ]] || return 0
-  environment_profile_resolve_command docker || return
-  docker_path="${ENVIRONMENT_PROFILE_COMMAND_PATH}"
+  docker_target_ensure || return
+  docker_path="${DOCKER_TARGET_DOCKER_PATH}"
   environment_profile_check_docker \
     "${docker_path}" "${timeout_path}" "${mkdir_path}" "${rm_path}" || return
   environment_profile_classify_project \
@@ -1265,6 +1383,13 @@ environment_profile_render_evidence() {
     'DOCKER_BUILD_SURFACE=stdin_network_none_pull_false_no_cache_plain' \
     'BUILDKIT_RESULT_PROOF=parser_ready_runtime_execution_not_run' \
     'DOCKER_LOCAL_OPERATIONS=inspect_format_local_remove' \
+    'DOCKER_TARGET_TRANSPORT=unix' \
+    'DOCKER_TARGET_SCOPE=local' \
+    'DOCKER_TARGET_FROZEN=true' \
+    "DOCKER_TARGET_DISCOVERY=${DOCKER_TARGET_DISCOVERY}" \
+    "DOCKER_TARGET_FINGERPRINT=${DOCKER_TARGET_FINGERPRINT}" \
+    'DOCKER_BUILDER_CONTRACT=daemon_default_required_runtime_not_run' \
+    'KIND_DOCKER_CONTRACT=frozen_same_target_required_runtime_not_run' \
     "PROJECT_BOOTSTRAP_STATE=${ENVIRONMENT_PROFILE_PROJECT_STATE}" \
     "AQUA_IDENTITY=${ENVIRONMENT_PROFILE_AQUA_IDENTITY}" \
     "KIND_IDENTITY=${ENVIRONMENT_PROFILE_KIND_IDENTITY}" \
@@ -1303,6 +1428,23 @@ environment_profile_validate_evidence_value() {
     DOCKER_BUILD_SURFACE) [[ "${value}" == stdin_network_none_pull_false_no_cache_plain ]] ;;
     BUILDKIT_RESULT_PROOF) [[ "${value}" == parser_ready_runtime_execution_not_run ]] ;;
     DOCKER_LOCAL_OPERATIONS) [[ "${value}" == inspect_format_local_remove ]] ;;
+    DOCKER_TARGET_TRANSPORT) [[ "${value}" == unix ]] ;;
+    DOCKER_TARGET_SCOPE) [[ "${value}" == local ]] ;;
+    DOCKER_TARGET_FROZEN) [[ "${value}" == true ]] ;;
+    DOCKER_TARGET_DISCOVERY)
+      [[ "${value}" =~ ^(host_override|explicit_context|selected_context|test_adapter)$ &&
+        "${value}" == "${DOCKER_TARGET_DISCOVERY}" ]]
+      ;;
+    DOCKER_TARGET_FINGERPRINT)
+      [[ "${value}" =~ ^[0-9a-f]{64}$ &&
+        "${value}" == "${DOCKER_TARGET_FINGERPRINT}" ]]
+      ;;
+    DOCKER_BUILDER_CONTRACT)
+      [[ "${value}" == daemon_default_required_runtime_not_run ]]
+      ;;
+    KIND_DOCKER_CONTRACT)
+      [[ "${value}" == frozen_same_target_required_runtime_not_run ]]
+      ;;
     PROJECT_BOOTSTRAP_STATE) [[ "${value}" == ready ]] ;;
     AQUA_IDENTITY) [[ "${value}" == "${AQUA_VERSION}" ]] ;;
     KIND_IDENTITY)
@@ -1328,6 +1470,9 @@ environment_profile_validate_evidence() {
     PROCESS_STATE_CAPABILITY DOCKER_CLIENT_VERSION DOCKER_SERVER_VERSION
     DOCKER_CLIENT_API DOCKER_SERVER_API DOCKER_DAEMON_PLATFORM
     DOCKER_BUILD_SURFACE BUILDKIT_RESULT_PROOF DOCKER_LOCAL_OPERATIONS
+    DOCKER_TARGET_TRANSPORT DOCKER_TARGET_SCOPE DOCKER_TARGET_FROZEN
+    DOCKER_TARGET_DISCOVERY DOCKER_TARGET_FINGERPRINT DOCKER_BUILDER_CONTRACT
+    KIND_DOCKER_CONTRACT
     PROJECT_BOOTSTRAP_STATE AQUA_IDENTITY KIND_IDENTITY KUBECTL_IDENTITY
   )
   [[ -f "${evidence}" && ! -L "${evidence}" ]] || return 1

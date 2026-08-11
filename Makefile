@@ -1,4 +1,6 @@
-SHELL := /usr/bin/env bash
+override SHELL := /bin/bash
+override .SHELLFLAGS := -p -c
+unexport BASH_ENV ENV MAKEFILES MFLAGS GNUMAKEFLAGS
 .DEFAULT_GOAL := help
 
 .PHONY: help doctor environment-evidence bootstrap tool-lock hooks check-fast check
@@ -89,7 +91,10 @@ artifact-verify:
 	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . verify \
 	    --archive "$${archive_path}"
 
-verify: check prove-gates verify-runtime
+verify:
+	@tools/quality/check.sh
+	@tools/quality/prove-gates.sh
+	@tools/kubernetes/verify.sh
 
 verify-runtime:
 	@tools/kubernetes/verify.sh
@@ -111,4 +116,5 @@ kind-down:
 
 clean:
 	@tools/kubernetes/kind-down.sh --if-present
-	@rm -rf .platform
+	@builtin source tools/common/env.sh; \
+	  run_host_command rm -rf -- "$${PLATFORM_STATE_DIR}"

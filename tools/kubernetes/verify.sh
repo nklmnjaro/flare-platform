@@ -1,9 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+VERIFY_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${VERIFY_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || VERIFY_SOURCE_DIR=.
+builtin source "${VERIFY_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+unset VERIFY_SOURCE_DIR
 
 emergency_teardown() {
   local status=$?
@@ -25,6 +28,7 @@ prove_cluster_absent() {
 main() {
   local status=0
   local final_cluster_state=unknown repeated_cluster_state=unknown
+  docker_target_ensure || return
   "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" || return
   require_tool kind
   require_tool kubectl

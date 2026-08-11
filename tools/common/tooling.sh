@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
+builtin set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/state.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../bootstrap/aqua-trust.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/state.sh"
+builtin source "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh"
 PROCESS_STATE_MODULE_PATH="${PLATFORM_ROOT}/tools/common/process-state.sh"
+EVIDENCE_CAPTURE_SCRIPT="${PLATFORM_ROOT}/tools/common/evidence-capture.sh"
 # shellcheck source=process-state.sh
-source "${PROCESS_STATE_MODULE_PATH}"
+builtin source "${PROCESS_STATE_MODULE_PATH}"
 
 EVIDENCE_BOUNDARY_STATUS=70
 EVIDENCE_WRONG_STATUS=71
@@ -13,8 +14,6 @@ EVIDENCE_MISSING_MARKER=72
 EVIDENCE_MAX_FILE_BYTES=32768
 EVIDENCE_MAX_RAW_BYTES=65536
 MANAGED_TOOL_PATH=""
-PROJECT_AQUA_VERIFIED=false
-PROJECT_AQUA_PROXY_VERIFIED=false
 
 is_managed_tool() {
   case "$1" in
@@ -28,7 +27,8 @@ is_managed_tool() {
 
 managed_tool_failure() {
   local command_name="$1"
-  printf 'FAIL  tooling       project-managed toolchain unavailable or untrusted: %s; run make bootstrap\n' \
+  builtin printf \
+    'FAIL  tooling       project-managed toolchain unavailable or untrusted: %s; run make bootstrap\n' \
     "${command_name}" >&2
   return 1
 }
@@ -37,23 +37,17 @@ resolve_managed_tool() {
   local command_name="$1"
   local candidate proxy resolved root symlink_target
   is_managed_tool "${command_name}" || {
-    printf 'FAIL  tooling       %s is not an Aqua-managed command\n' \
+    builtin printf 'FAIL  tooling       %s is not an Aqua-managed command\n' \
       "${command_name}" >&2
     return 2
   }
-  if [[ "${PROJECT_AQUA_VERIFIED}" != true ]]; then
-    if ! verify_existing_aqua tooling >/dev/null 2>&1; then
-      managed_tool_failure "${command_name}"
-      return
-    fi
-    PROJECT_AQUA_VERIFIED=true
+  if ! verify_existing_aqua tooling >/dev/null 2>&1; then
+    managed_tool_failure "${command_name}"
+    return
   fi
-  if [[ "${PROJECT_AQUA_PROXY_VERIFIED}" != true ]]; then
-    if ! verify_existing_aqua_proxy tooling >/dev/null 2>&1; then
-      managed_tool_failure "${command_name}"
-      return
-    fi
-    PROJECT_AQUA_PROXY_VERIFIED=true
+  if ! verify_existing_aqua_proxy tooling >/dev/null 2>&1; then
+    managed_tool_failure "${command_name}"
+    return
   fi
   if ! assert_existing_state_directory "aqua/bin"; then
     managed_tool_failure "${command_name}"
@@ -67,7 +61,7 @@ resolve_managed_tool() {
     return
   fi
   symlink_target="$({
-    "${AQUA_TRUST_READLINK}" -n -- "${candidate}" && printf '\036'
+    "${AQUA_TRUST_READLINK}" -n -- "${candidate}" && builtin printf '\036'
   })" || {
     managed_tool_failure "${command_name}"
     return
@@ -100,14 +94,27 @@ resolve_managed_tool() {
 
 managed_tool_path() {
   resolve_managed_tool "$1" || return
-  printf '%s\n' "${MANAGED_TOOL_PATH}"
+  builtin printf '%s\n' "${MANAGED_TOOL_PATH}"
 }
 
 run_managed_tool() {
   local command_name="$1"
   shift
   resolve_managed_tool "${command_name}" || return
-  "${MANAGED_TOOL_PATH}" "$@"
+  run_project_aqua_command "${command_name}" "$@"
+}
+
+run_managed_tool_bounded() {
+  local max_time="${1:-}" command_name="${2:-}"
+  (($# >= 2)) || {
+    builtin printf \
+      'FAIL  tooling       timeout and managed command are required\n' >&2
+    return "${HOST_COMMAND_USAGE_STATUS}"
+  }
+  shift 2
+  aqua_validate_bounded_duration "${max_time}" || return
+  resolve_managed_tool "${command_name}" || return
+  run_project_aqua_command_bounded "${max_time}" "${command_name}" "$@"
 }
 
 require_tool() {
@@ -116,37 +123,35 @@ require_tool() {
     resolve_managed_tool "${command_name}" >/dev/null
     return
   fi
-  if command -v "${command_name}" >/dev/null 2>&1; then
-    return 0
-  fi
-  printf 'FAIL  tooling       %s missing; run make bootstrap\n' "${command_name}" >&2
-  return 1
+  host_command_admit "${command_name}" >/dev/null
 }
 
 expect_failure() {
   local label="$1"
   shift
   if "$@" >/dev/null 2>&1; then
-    printf 'FAIL  red-fixture   %s unexpectedly passed\n' "${label}" >&2
+    builtin printf 'FAIL  red-fixture   %s unexpectedly passed\n' \
+      "${label}" >&2
     return 1
   fi
-  printf 'PASS  red-fixture   %s rejected\n' "${label}"
+  builtin printf 'PASS  red-fixture   %s rejected\n' "${label}"
 }
 
 validate_evidence_arguments() {
   local label="$1"
   local expected_status="$2"
   if [[ ! "${label}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-    printf 'FAIL  red-marker    unsafe evidence label: %q\n' "${label}" >&2
+    builtin printf 'FAIL  red-marker    unsafe evidence label: %q\n' \
+      "${label}" >&2
     return "${EVIDENCE_BOUNDARY_STATUS}"
   fi
   if [[ ! "${expected_status}" =~ ^[0-9]+$ ]] || ((expected_status > 255)); then
-    printf 'FAIL  red-marker    invalid expected status: %q\n' \
+    builtin printf 'FAIL  red-marker    invalid expected status: %q\n' \
       "${expected_status}" >&2
     return "${EVIDENCE_BOUNDARY_STATUS}"
   fi
   if [[ -z "${PLATFORM_ROOT:-}" || -z "${PLATFORM_STATE_DIR:-}" ]]; then
-    printf 'FAIL  red-marker    repository or state root is empty\n' >&2
+    builtin printf 'FAIL  red-marker    repository or state root is empty\n' >&2
     return "${EVIDENCE_BOUNDARY_STATUS}"
   fi
 }
@@ -154,16 +159,20 @@ validate_evidence_arguments() {
 cleanup_evidence_capture() {
   local status=$?
   trap - EXIT
-  if [[ "${raw_owned}" == true ]] && ! rm -f -- "${raw_output}"; then
+  if [[ "${raw_owned}" == true ]] &&
+    ! run_host_command rm -f -- "${raw_output}"; then
     status="${EVIDENCE_BOUNDARY_STATUS}"
   fi
-  if [[ "${render_owned}" == true ]] && ! rm -f -- "${render_output}"; then
+  if [[ "${render_owned}" == true ]] &&
+    ! run_host_command rm -f -- "${render_output}"; then
     status="${EVIDENCE_BOUNDARY_STATUS}"
   fi
-  if [[ "${bound_owned}" == true ]] && ! rm -f -- "${bound_output}"; then
+  if [[ "${bound_owned}" == true ]] &&
+    ! run_host_command rm -f -- "${bound_output}"; then
     status="${EVIDENCE_BOUNDARY_STATUS}"
   fi
-  if [[ "${status_owned}" == true ]] && ! rm -f -- "${status_output}"; then
+  if [[ "${status_owned}" == true ]] &&
+    ! run_host_command rm -f -- "${status_output}"; then
     status="${EVIDENCE_BOUNDARY_STATUS}"
   fi
   exit "${status}"
@@ -182,11 +191,11 @@ render_evidence_file() {
   local sentinel=$'\036'
   local LC_ALL=C
   [[ "${PLATFORM_TEST_FORCE_EVIDENCE_RENDER_FAILURE:-}" != true ]] || return 1
-  raw_size="$(wc -c <"${raw_output}")" || return
+  raw_size="$(run_host_command wc -c <"${raw_output}")" || return
   ((raw_size <= EVIDENCE_MAX_RAW_BYTES)) || return 1
   payload="$({
-    cat -- "${raw_output}" || exit 1
-    printf '%s' "${sentinel}"
+    run_host_command cat -- "${raw_output}" || exit 1
+    builtin printf '%s' "${sentinel}"
   })"
   read_status=$?
   [[ "${read_status}" -eq 0 && "${payload: -1}" == "${sentinel}" ]] || return 1
@@ -199,94 +208,41 @@ render_evidence_file() {
     marker_evidence="${marker_evidence//"${HOME}"/<HOME>}"
   fi
   {
-    printf 'schema=flare-platform-red-evidence-v1\n'
-    printf 'label=%s\nexpected_status=%s\nactual_status=%s\n' \
+    builtin printf 'schema=flare-platform-red-evidence-v1\n'
+    builtin printf 'label=%s\nexpected_status=%s\nactual_status=%s\n' \
       "${label}" "${expected_status}" "${actual_status}"
-    printf 'expected_marker=%q\nmarker_observed=%s\nraw_truncated=%s\n' \
+    builtin printf \
+      'expected_marker=%q\nmarker_observed=%s\nraw_truncated=%s\n' \
       "${marker_evidence}" "${marker_found}" "${raw_truncated}"
-    printf 'total_file_bound_bytes=%s\npayload_begin\n' "${EVIDENCE_MAX_FILE_BYTES}"
+    builtin printf 'total_file_bound_bytes=%s\npayload_begin\n' \
+      "${EVIDENCE_MAX_FILE_BYTES}"
   } >"${render_output}" || return
-  header_size="$(wc -c <"${render_output}")" || return
+  header_size="$(run_host_command wc -c <"${render_output}")" || return
   ((header_size <= EVIDENCE_MAX_FILE_BYTES)) || return 1
   remaining=$((EVIDENCE_MAX_FILE_BYTES - header_size))
-  printf '%s' "${payload:0:remaining}" >>"${render_output}" || return
-  [[ "$(wc -c <"${render_output}")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
+  builtin printf '%s' "${payload:0:remaining}" >>"${render_output}" || return
+  [[ "$(run_host_command wc -c <"${render_output}")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
 }
 
 capture_bounded_evidence() {
   local raw_output="$1" status_output="$2" max_time="$3"
+  local timeout_path bash_path head_path cat_path mktemp_path rm_path sleep_path
   shift 3
-  # The capture program expands in the bounded child shell.
-  # shellcheck disable=SC2016
-  timeout --signal=TERM --kill-after=2s "${max_time}" bash -c '
-set +e
-raw_output=$1
-status_output=$2
-raw_max=$3
-boundary_status=$4
-process_state_module=$5
-shift 5
-command_pid=""
-collector_pid=""
-writer_fd=""
-set -m || exit "${boundary_status}"
-source "${process_state_module}" || exit "${boundary_status}"
-
-cleanup_capture() {
-  local saved_status=$?
-  trap - EXIT TERM INT HUP
-  [[ -z "${command_pid}" ]] || kill -KILL -- "-${command_pid}" 2>/dev/null || true
-  [[ -z "${collector_pid}" ]] || kill -KILL -- "-${collector_pid}" 2>/dev/null || true
-  [[ -z "${writer_fd}" ]] || exec {writer_fd}>&-
-  [[ -z "${command_pid}" ]] || wait "${command_pid}" 2>/dev/null || true
-  [[ -z "${collector_pid}" ]] || wait "${collector_pid}" 2>/dev/null || true
-  if [[ -n "${command_pid}" ]] &&
-    ! linux_wait_for_process_group_absence "${command_pid}"; then
-    saved_status="${boundary_status}"
-  fi
-  exit "${saved_status}"
-}
-
-trap cleanup_capture EXIT
-trap "exit 124" TERM INT HUP
-coproc EVIDENCE_COLLECTOR {
-  collector_status=0
-  head -c "$((raw_max + 1))" >"${raw_output}" || collector_status=$?
-  cat >/dev/null || collector_status=$?
-  exit "${collector_status}"
-}
-collector_pid=${EVIDENCE_COLLECTOR_PID:-}
-[[ -n "${collector_pid}" && ${#EVIDENCE_COLLECTOR[@]} -eq 2 ]] || exit "${boundary_status}"
-collector_output_fd=${EVIDENCE_COLLECTOR[0]}
-exec {writer_fd}>&"${EVIDENCE_COLLECTOR[1]}" || exit "${boundary_status}"
-collector_input_fd=${EVIDENCE_COLLECTOR[1]}
-exec {collector_input_fd}>&- || exit "${boundary_status}"
-exec {collector_output_fd}<&- || exit "${boundary_status}"
-(
-  set +m || exit "${boundary_status}"
-  ulimit -c 0 || exit "${boundary_status}"
-  "$@"
-  command_status=$?
-  printf "%s\n" "${command_status}" >"${status_output}" || exit "${boundary_status}"
-  exit 0
-) >&"${writer_fd}" 2>&1 &
-command_pid=$!
-exec {writer_fd}>&- || exit "${boundary_status}"
-writer_fd=""
-set +m || exit "${boundary_status}"
-wait "${command_pid}"
-producer_status=$?
-kill -KILL -- "-${command_pid}" 2>/dev/null || true
-linux_wait_for_process_group_absence "${command_pid}" || exit "${boundary_status}"
-wait "${collector_pid}"
-collector_status=$?
-command_pid=""
-collector_pid=""
-trap - EXIT TERM INT HUP
-[[ "${producer_status}" -eq 0 && "${collector_status}" -eq 0 ]]
-' evidence-capture "${raw_output}" "${status_output}" \
+  timeout_path="$(host_command_path timeout)" || return
+  bash_path="$(host_command_path bash)" || return
+  head_path="$(host_command_path head)" || return
+  cat_path="$(host_command_path cat)" || return
+  mktemp_path="$(host_command_path mktemp)" || return
+  rm_path="$(host_command_path rm)" || return
+  sleep_path="$(host_command_path sleep)" || return
+  [[ -f "${EVIDENCE_CAPTURE_SCRIPT}" && ! -L "${EVIDENCE_CAPTURE_SCRIPT}" ]] ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
+  "${timeout_path}" --foreground --signal=TERM --kill-after=2s \
+    "${max_time}" "${bash_path}" -p "${EVIDENCE_CAPTURE_SCRIPT}" \
+    "${raw_output}" "${status_output}" \
     "${EVIDENCE_MAX_RAW_BYTES}" "${EVIDENCE_BOUNDARY_STATUS}" \
-    "${PROCESS_STATE_MODULE_PATH}" "$@"
+    "${PROCESS_STATE_MODULE_PATH}" "${head_path}" "${cat_path}" \
+    "${mktemp_path}" "${rm_path}" "${sleep_path}" "$@"
 }
 
 read_captured_status() {
@@ -295,7 +251,7 @@ read_captured_status() {
   mapfile -t lines <"${status_output}" || return
   [[ "${#lines[@]}" -eq 1 && "${lines[0]}" =~ ^[0-9]+$ ]] || return 1
   ((10#${lines[0]} <= 255)) || return 1
-  printf '%s\n' "$((10#${lines[0]}))"
+  builtin printf '%s\n' "$((10#${lines[0]}))"
 }
 
 expect_failure_with_marker() (
@@ -316,10 +272,12 @@ expect_failure_with_marker() (
     "${EVIDENCE_BOUNDARY_STATUS}"
   saved_output="$(prepare_state_file "gate-evidence/${label}.txt")" || return \
     "${EVIDENCE_BOUNDARY_STATUS}"
-  rm -f -- "${raw_output}" || return "${EVIDENCE_BOUNDARY_STATUS}"
+  run_host_command rm -f -- "${raw_output}" ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
   raw_owned=true
-  status_output="$(mktemp "${evidence_dir}/.${label}.status.XXXXXXXX")" || return \
-    "${EVIDENCE_BOUNDARY_STATUS}"
+  status_output="$(run_host_command mktemp \
+    "${evidence_dir}/.${label}.status.XXXXXXXX")" ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
   status_owned=true
   [[ -f "${status_output}" && ! -L "${status_output}" ]] || return \
     "${EVIDENCE_BOUNDARY_STATUS}"
@@ -333,21 +291,24 @@ expect_failure_with_marker() (
     status="$(read_captured_status "${status_output}")" || return \
       "${EVIDENCE_BOUNDARY_STATUS}"
   fi
-  raw_size="$(wc -c <"${raw_output}")" || return "${EVIDENCE_BOUNDARY_STATUS}"
+  raw_size="$(run_host_command wc -c <"${raw_output}")" ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
   if ((raw_size > EVIDENCE_MAX_RAW_BYTES)); then
     raw_truncated=true
-    bound_output="$(mktemp "${evidence_dir}/.${label}.bound.XXXXXXXX")" || return \
-      "${EVIDENCE_BOUNDARY_STATUS}"
+    bound_output="$(run_host_command mktemp \
+      "${evidence_dir}/.${label}.bound.XXXXXXXX")" ||
+      return "${EVIDENCE_BOUNDARY_STATUS}"
     bound_owned=true
-    head -c "${EVIDENCE_MAX_RAW_BYTES}" "${raw_output}" >"${bound_output}" || return \
-      "${EVIDENCE_BOUNDARY_STATUS}"
-    mv -f -- "${bound_output}" "${raw_output}" || return \
-      "${EVIDENCE_BOUNDARY_STATUS}"
+    run_host_command head -c "${EVIDENCE_MAX_RAW_BYTES}" "${raw_output}" \
+      >"${bound_output}" || return "${EVIDENCE_BOUNDARY_STATUS}"
+    run_host_command mv -f -- "${bound_output}" "${raw_output}" ||
+      return "${EVIDENCE_BOUNDARY_STATUS}"
     bound_owned=false
   fi
-  grep -Fq -- "${marker}" "${raw_output}" && marker_found=true
-  render_output="$(mktemp "${evidence_dir}/.${label}.render.XXXXXXXX")" || return \
-    "${EVIDENCE_BOUNDARY_STATUS}"
+  run_host_command grep -Fq -- "${marker}" "${raw_output}" && marker_found=true
+  render_output="$(run_host_command mktemp \
+    "${evidence_dir}/.${label}.render.XXXXXXXX")" ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
   render_owned=true
   [[ -f "${render_output}" && ! -L "${render_output}" ]] || return \
     "${EVIDENCE_BOUNDARY_STATUS}"
@@ -357,28 +318,30 @@ expect_failure_with_marker() (
     "${EVIDENCE_BOUNDARY_STATUS}"
   prepare_state_file "gate-evidence/${label}.txt" >/dev/null || return \
     "${EVIDENCE_BOUNDARY_STATUS}"
-  mv -f -- "${render_output}" "${saved_output}" || return \
-    "${EVIDENCE_BOUNDARY_STATUS}"
+  run_host_command mv -f -- "${render_output}" "${saved_output}" ||
+    return "${EVIDENCE_BOUNDARY_STATUS}"
   render_owned=false
   if [[ "${status}" -ne "${expected_status}" ]]; then
-    printf 'FAIL  red-marker    %s exited %s, expected %s\n' \
+    builtin printf 'FAIL  red-marker    %s exited %s, expected %s\n' \
       "${label}" "${status}" "${expected_status}" >&2
     return "${EVIDENCE_WRONG_STATUS}"
   fi
   if [[ "${marker_found}" != true ]]; then
-    printf 'FAIL  red-marker    %s missed expected marker: %s\n' \
+    builtin printf 'FAIL  red-marker    %s missed expected marker: %s\n' \
       "${label}" "${marker}" >&2
     return "${EVIDENCE_MISSING_MARKER}"
   fi
-  printf 'PASS  red-marker    %s rejected with %s\n' "${label}" "${marker}"
+  builtin printf 'PASS  red-marker    %s rejected with %s\n' \
+    "${label}" "${marker}"
 )
 
 expect_success() {
   local label="$1"
   shift
   if ! "$@" >/dev/null 2>&1; then
-    printf 'FAIL  green-fixture %s unexpectedly failed\n' "${label}" >&2
+    builtin printf 'FAIL  green-fixture %s unexpectedly failed\n' \
+      "${label}" >&2
     return 1
   fi
-  printf 'PASS  green-fixture %s accepted\n' "${label}"
+  builtin printf 'PASS  green-fixture %s accepted\n' "${label}"
 }

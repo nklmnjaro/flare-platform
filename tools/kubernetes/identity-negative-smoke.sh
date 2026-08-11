@@ -1,14 +1,18 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
+IDENTITY_NEGATIVE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${IDENTITY_NEGATIVE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  IDENTITY_NEGATIVE_SOURCE_DIR=.
+builtin source "${IDENTITY_NEGATIVE_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"
 # This helper guards its CLI entry point and is safe to source.
-source "$(dirname -- "${BASH_SOURCE[0]}")/reference-context.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/reference-context.sh"
+unset IDENTITY_NEGATIVE_SOURCE_DIR
 
-STALE_EVIDENCE_SCHEMA="flare-platform-runtime-identity-stale-v1"
+STALE_EVIDENCE_SCHEMA="flare-platform-runtime-identity-stale-v2"
 STALE_EVIDENCE_RELATIVE="runtime-identity/stale.env"
 STALE_CONTEXT_RELATIVE="runtime-identity/stale-context"
 STALE_CONTEXT="${PLATFORM_STATE_DIR}/${STALE_CONTEXT_RELATIVE}"
@@ -23,6 +27,8 @@ STALE_ORDER_PROOF="canonical-a-build,canonical-a-load,stale-b-derive,stale-b-exe
 STALE_ORDER_PROOF+="invalidate-a-build-record,stale-b-build-local-only,deploy-loaded-a"
 
 PORT_FORWARD_PID=""
+PORT_FORWARD_STARTTIME=""
+PORT_FORWARD_START_GATE=""
 PORT_FORWARD_LOG=""
 HEALTH_RESPONSE_FILE=""
 IDENTITY_RESPONSE_FILE=""
@@ -56,7 +62,10 @@ hash_regular_file() {
     printf 'FAIL  runtime-stale hash source is not a regular file: %s\n' "${path}" >&2
     return 1
   fi
-  digest="$(sha256sum -- "${path}" | awk '{print $1}')" || return
+  # awk program is intentionally literal.
+  # shellcheck disable=SC2016
+  digest="$(run_host_command sha256sum -- "${path}" |
+    run_host_command awk '{print $1}')" || return
   if ! runtime_identity_is_sha256 "${digest}"; then
     printf 'FAIL  runtime-stale malformed SHA-256 for: %s\n' "${path}" >&2
     return 1
@@ -65,23 +74,45 @@ hash_regular_file() {
 }
 
 remove_probe_files() {
-  local path
-  for path in "${PORT_FORWARD_LOG}" "${HEALTH_RESPONSE_FILE}" \
-    "${IDENTITY_RESPONSE_FILE}"; do
-    [[ -z "${path}" ]] || rm -f -- "${path}"
+  local path status=0
+  for path in "${PORT_FORWARD_START_GATE}" "${PORT_FORWARD_LOG}" \
+    "${HEALTH_RESPONSE_FILE}" "${IDENTITY_RESPONSE_FILE}"; do
+    if [[ -n "${path}" ]] && ! run_host_command rm -f -- "${path}"; then
+      status=1
+    fi
   done
-  PORT_FORWARD_LOG=""
-  HEALTH_RESPONSE_FILE=""
-  IDENTITY_RESPONSE_FILE=""
+  if ((status == 0)); then
+    PORT_FORWARD_START_GATE=""
+    PORT_FORWARD_LOG=""
+    HEALTH_RESPONSE_FILE=""
+    IDENTITY_RESPONSE_FILE=""
+  fi
+  return "${status}"
+}
+
+stop_unbound_port_forward() {
+  [[ -n "${PORT_FORWARD_PID}" ]] || return 0
+  builtin kill -KILL "${PORT_FORWARD_PID}" 2>/dev/null || true
+  builtin wait "${PORT_FORWARD_PID}" 2>/dev/null || true
+  PORT_FORWARD_PID=""
+  PORT_FORWARD_STARTTIME=""
 }
 
 emergency_cleanup() {
   local status=$?
   if [[ -n "${PORT_FORWARD_PID}" ]]; then
-    runtime_identity_stop_tracked "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true
+    if [[ -n "${PORT_FORWARD_STARTTIME}" ]]; then
+      runtime_identity_stop_tracked \
+        "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" \
+        >/dev/null 2>&1 || true
+    else
+      # The unreleased regular-file gate keeps this direct child payload-free.
+      stop_unbound_port_forward
+    fi
     PORT_FORWARD_PID=""
+    PORT_FORWARD_STARTTIME=""
   fi
-  remove_probe_files
+  remove_probe_files || true
   if [[ -f "${KUBECONFIG}" ]]; then
     "${PLATFORM_ROOT}/tools/kubernetes/delete-namespace.sh" >/dev/null 2>&1 || true
   fi
@@ -130,29 +161,31 @@ stage_stale_b_context() {
   dockerfile="$(prepare_state_file "${STALE_CONTEXT_RELATIVE}/Dockerfile")" || return
   server="$(prepare_state_file "${STALE_CONTEXT_RELATIVE}/server")" || return
   manifest="$(prepare_state_file 'runtime-identity/stale-context.manifest.tsv')" || return
-  rm -f -- "${manifest}"
-  cp -- "${REFERENCE_CONTEXT}/Dockerfile" "${dockerfile}" || return
-  cp -- "${REFERENCE_CONTEXT}/server" "${server}" || return
-  chmod 0644 "${dockerfile}" || return
-  chmod 0755 "${server}" || return
-  before_bytes="$(stat -c '%s' "${server}")" || return
+  run_host_command rm -f -- "${manifest}"
+  run_host_command cp -- "${REFERENCE_CONTEXT}/Dockerfile" "${dockerfile}" || return
+  run_host_command cp -- "${REFERENCE_CONTEXT}/server" "${server}" || return
+  run_host_command chmod 0644 "${dockerfile}" || return
+  run_host_command chmod 0755 "${server}" || return
+  before_bytes="$(run_host_command stat -c '%s' "${server}")" || return
   printf 'X' >>"${server}" || return
-  after_bytes="$(stat -c '%s' "${server}")" || return
+  after_bytes="$(run_host_command stat -c '%s' "${server}")" || return
   if ((after_bytes != before_bytes + 1)); then
     printf 'FAIL  runtime-stale stale B did not gain exactly one trailing byte\n' >&2
     return 1
   fi
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-manifest.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-manifest.XXXXXXXX")" || return
   if ! write_manifest "${STALE_CONTEXT}" "${temporary}"; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   fi
   prepared="$(prepare_state_file 'runtime-identity/stale-context.manifest.tsv')" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
-  if [[ "${prepared}" != "${manifest}" ]] || ! mv -fT -- "${temporary}" "${manifest}"; then
-    rm -f -- "${temporary}"
+  if [[ "${prepared}" != "${manifest}" ]] ||
+    ! run_host_command mv -fT -- "${temporary}" "${manifest}"; then
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  runtime-stale unable to publish stale context manifest\n' >&2
     return 1
   fi
@@ -169,27 +202,31 @@ stage_stale_b_context() {
 }
 
 prove_stale_b_executable() {
-  local line log prepared size status temporary
+  local bash_path env_path line log prepared size status temporary
   local -a lines=()
   log="$(prepare_state_file "${STALE_EXEC_LOG_RELATIVE}")" || return
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-exec.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-exec.XXXXXXXX")" || return
+  bash_path="$(host_command_path bash)" || return
+  env_path="$(host_command_path env)" || return
   set +e
   # The positional arguments expand only in the bounded child shell.
   # shellcheck disable=SC2016
-  run_bounded 10s bash -c '
+  run_bounded 10s "${bash_path}" -p -c '
 ulimit -c 0 || exit "$2"
 ulimit -f 4 || exit "$2"
-exec env PLATFORM_FAIL_STARTUP=1 "$1"
+exec "$3" PLATFORM_FAIL_STARTUP=1 "$1"
 ' _ "${STALE_CONTEXT}/server" "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    "${env_path}" \
     >"${temporary}" 2>&1
   status=$?
   set -e
-  size="$(wc -c <"${temporary}")" || {
-    rm -f -- "${temporary}"
+  size="$(run_host_command wc -c <"${temporary}")" || {
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
   mapfile -t lines <"${temporary}" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
   line="${lines[0]:-}"
@@ -197,18 +234,20 @@ exec env PLATFORM_FAIL_STARTUP=1 "$1"
     "${#lines[@]}" -ne 1 ]] ||
     [[ "${line}" != "${STALE_STARTUP_MARKER}" &&
       "${line}" != *" ${STALE_STARTUP_MARKER}" ]]; then
-    head -c "${STALE_MAX_EXEC_LOG_BYTES}" "${temporary}" >&2 || true
-    rm -f -- "${temporary}"
+    run_host_command head -c "${STALE_MAX_EXEC_LOG_BYTES}" \
+      "${temporary}" >&2 || true
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  runtime-stale B executable status/marker proof failed status=%s\n' \
       "${status}" >&2
     return 1
   fi
   prepared="$(prepare_state_file "${STALE_EXEC_LOG_RELATIVE}")" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
-  if [[ "${prepared}" != "${log}" ]] || ! mv -fT -- "${temporary}" "${log}"; then
-    rm -f -- "${temporary}"
+  if [[ "${prepared}" != "${log}" ]] ||
+    ! run_host_command mv -fT -- "${temporary}" "${log}"; then
+    run_host_command rm -f -- "${temporary}"
     return 1
   fi
   B_EXECUTABLE_STATUS=42
@@ -225,7 +264,7 @@ invalidate_canonical_a_build_record() {
     printf 'FAIL  runtime-stale state helper returned unexpected build record path\n' >&2
     return 1
   fi
-  rm -f -- "${prepared}" || return
+  run_host_command rm -f -- "${prepared}" || return
   if [[ -e "${prepared}" || -L "${prepared}" ]]; then
     printf 'FAIL  runtime-stale canonical A build record survived invalidation\n' >&2
     return 1
@@ -235,41 +274,47 @@ invalidate_canonical_a_build_record() {
 }
 
 capture_stale_b_build() {
-  local log prepared size temporary
+  local docker_path head_path log prepared size temporary
   local -a pipeline_status=()
   verify_context "${STALE_CONTEXT}" "${STALE_MANIFEST}" || return
   log="$(prepare_state_file "${STALE_BUILD_LOG_RELATIVE}")" || return
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-build.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-build.XXXXXXXX")" || return
+  docker_target_ensure || return
+  docker_path="${DOCKER_TARGET_DOCKER_PATH}"
+  head_path="$(host_command_path head)" || return
   set +e
-  run_bounded 180s env DOCKER_BUILDKIT=1 docker build \
+  docker_target_run_bounded 180s "${docker_path}" build --builder default \
     --network=none --pull=false --no-cache --progress=plain \
     --file "${STALE_CONTEXT}/Dockerfile" --tag "${PLATFORM_IMAGE}" \
     "${STALE_CONTEXT}" 2>&1 |
-    head -c "$((STALE_MAX_BUILD_LOG_BYTES + 1))" >"${temporary}"
+    "${head_path}" -c "$((STALE_MAX_BUILD_LOG_BYTES + 1))" >"${temporary}"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
-  size="$(wc -c <"${temporary}")" || {
-    rm -f -- "${temporary}"
+  size="$(run_host_command wc -c <"${temporary}")" || {
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
   if [[ "${pipeline_status[1]}" -ne 0 || "${size}" -gt "${STALE_MAX_BUILD_LOG_BYTES}" ]]; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  runtime-stale B Docker build log exceeded its boundary\n' >&2
     return 1
   fi
   if [[ "${pipeline_status[0]}" -ne 0 ]]; then
-    head -c "${STALE_MAX_BUILD_LOG_BYTES}" "${temporary}" >&2 || true
-    rm -f -- "${temporary}"
+    run_host_command head -c "${STALE_MAX_BUILD_LOG_BYTES}" \
+      "${temporary}" >&2 || true
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  runtime-stale B Docker build failed with status %s\n' \
       "${pipeline_status[0]}" >&2
     return 1
   fi
   prepared="$(prepare_state_file "${STALE_BUILD_LOG_RELATIVE}")" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
-  if [[ "${prepared}" != "${log}" ]] || ! mv -fT -- "${temporary}" "${log}"; then
-    rm -f -- "${temporary}"
+  if [[ "${prepared}" != "${log}" ]] ||
+    ! run_host_command mv -fT -- "${temporary}" "${log}"; then
+    run_host_command rm -f -- "${temporary}"
     return 1
   fi
   DOCKER_CONFIG_ID_B="$(docker_command 20s image inspect --format '{{.Id}}' \
@@ -321,27 +366,37 @@ apply_reference() {
 }
 
 start_dynamic_port_forward() {
-  local attempt pgid port kubectl_path
-  kubectl_path="$(managed_tool_path kubectl)" || return
-  PORT_FORWARD_LOG="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-port-forward.XXXXXXXX")" || return
+  local attempt port status=0
+  docker_target_ensure || return
+  docker_target_assert_frozen || return
+  PORT_FORWARD_LOG="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-port-forward.XXXXXXXX")" || return
+  PORT_FORWARD_START_GATE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-port-forward-start.XXXXXXXX")" ||
+    return
   runtime_identity_begin_tracked_cleanup
   set -m
   (
     set +m
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    [[ "$(<"${PORT_FORWARD_START_GATE}")" == go ]] ||
+      exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -c 0 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -f 64 || exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
-    exec timeout --foreground --signal=TERM --kill-after=5s 35s \
-      "${kubectl_path}" --request-timeout=0 port-forward --address=127.0.0.1 \
+    run_managed_tool kubectl --request-timeout=0 \
+      port-forward --address=127.0.0.1 \
       -n "${PLATFORM_NAMESPACE}" service/platform-reference :8080
   ) >"${PORT_FORWARD_LOG}" 2>&1 &
   PORT_FORWARD_PID=$!
   set +m
-  pgid="$(linux_process_read_stat "${PORT_FORWARD_PID}")" || return
-  pgid="${pgid#* }"
-  if [[ "${pgid}" != "${PORT_FORWARD_PID}" ]]; then
-    printf 'FAIL  runtime-stale port-forward PID is not its process-group ID\n' >&2
-    return 1
+  PORT_FORWARD_STARTTIME="$(runtime_identity_capture_group_starttime \
+    "${PORT_FORWARD_PID}")" || status=$?
+  if ((status != 0)); then
+    stop_unbound_port_forward
+    return "${status}"
   fi
+  printf 'go\n' >"${PORT_FORWARD_START_GATE}" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
   for ((attempt = 1; attempt <= 40; attempt++)); do
     if port="$(runtime_identity_parse_port "${PORT_FORWARD_LOG}" 2>/dev/null)"; then
       SELECTED_IPV4_PORT="${port}"
@@ -349,10 +404,13 @@ start_dynamic_port_forward() {
         "${SELECTED_IPV4_PORT}"
       return 0
     fi
-    runtime_identity_process_or_group_exists "${PORT_FORWARD_PID}" || break
-    sleep 0.25
+    runtime_identity_read_group_state \
+      "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" || return
+    [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || break
+    run_host_command sleep 0.25
   done
-  head -c "${RUNTIME_IDENTITY_MAX_PORT_LOG_BYTES}" "${PORT_FORWARD_LOG}" >&2 || true
+  run_host_command head -c "${RUNTIME_IDENTITY_MAX_PORT_LOG_BYTES}" \
+    "${PORT_FORWARD_LOG}" >&2 || true
   printf 'FAIL  runtime-stale dynamic port-forward did not become ready\n' >&2
   return 1
 }
@@ -362,14 +420,17 @@ fetch_endpoint() {
   local attempt
   for ((attempt = 1; attempt <= 10; attempt++)); do
     : >"${output}"
-    if curl --fail --silent --show-error --proto '=http' --connect-timeout 1 \
+    if run_host_command curl --disable --fail --silent --show-error --proto '=http' \
+      --connect-timeout 1 \
       --max-time 2 --max-filesize "${max_bytes}" \
       --output "${output}" \
       "http://127.0.0.1:${SELECTED_IPV4_PORT}${path}" 2>/dev/null; then
       return 0
     fi
-    runtime_identity_process_or_group_exists "${PORT_FORWARD_PID}" || break
-    sleep 0.25
+    runtime_identity_read_group_state \
+      "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" || return
+    [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || break
+    run_host_command sleep 0.25
   done
   printf 'FAIL  runtime-stale endpoint fetch failed: %s\n' "${path}" >&2
   return 1
@@ -377,8 +438,10 @@ fetch_endpoint() {
 
 prove_loaded_a_and_stale_b_mismatch() {
   local status
-  HEALTH_RESPONSE_FILE="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-health.XXXXXXXX")" || return
-  IDENTITY_RESPONSE_FILE="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale-identity.XXXXXXXX")" || return
+  HEALTH_RESPONSE_FILE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-health.XXXXXXXX")" || return
+  IDENTITY_RESPONSE_FILE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-identity.XXXXXXXX")" || return
   fetch_endpoint 4 /healthz "${HEALTH_RESPONSE_FILE}" || return
   HEALTH_RESPONSE="$(runtime_identity_parse_health_response "${HEALTH_RESPONSE_FILE}")" || return
   fetch_endpoint 66 /identity "${IDENTITY_RESPONSE_FILE}" || return
@@ -417,26 +480,25 @@ stop_dynamic_port_forward() {
     printf 'FAIL  runtime-stale missing tracked port-forward PID\n' >&2
     return 1
   fi
-  runtime_identity_stop_tracked "${PORT_FORWARD_PID}" || return
+  runtime_identity_stop_tracked \
+    "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" || return
   PORT_FORWARD_PID=""
-  if [[ "${RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP:-}" != absent ]]; then
+  PORT_FORWARD_STARTTIME=""
+  if [[ "${RUNTIME_IDENTITY_PORT_FORWARD_CLEANUP:-}" != no-live-members ]]; then
     printf 'FAIL  runtime-stale process-group cleanup was not proved\n' >&2
     return 1
   fi
-  if curl --fail --silent --proto '=http' --connect-timeout 1 --max-time 1 \
-    "http://127.0.0.1:${SELECTED_IPV4_PORT}/healthz" >/dev/null 2>&1; then
-    printf 'FAIL  runtime-stale selected port remained reachable after cleanup\n' >&2
-    return 1
-  fi
-  if [[ "$(wc -c <"${PORT_FORWARD_LOG}")" -gt "${RUNTIME_IDENTITY_MAX_PORT_LOG_BYTES}" ]]; then
+  runtime_identity_require_selected_port_absent "${SELECTED_IPV4_PORT}" || return
+  if [[ "$(run_host_command wc -c <"${PORT_FORWARD_LOG}")" -gt "${RUNTIME_IDENTITY_MAX_PORT_LOG_BYTES}" ]]; then
     printf 'FAIL  runtime-stale port-forward log exceeded its boundary\n' >&2
     return 1
   fi
-  PORT_FORWARD_CLEANUP=absent
+  PORT_FORWARD_CLEANUP=no-live-members
   PORT_FORWARD_PORT_ABSENT=true
   PORT_FORWARD_PID_ABSENT=true
-  remove_probe_files
-  printf 'INFO  runtime-stale order=10 dynamic_port_absent=true pid_group_absent=true\n'
+  remove_probe_files || return
+  printf \
+    'INFO  runtime-stale order=10 dynamic_port_absent=true live_group_members_absent=true\n'
 }
 
 validate_stale_evidence_inputs() {
@@ -466,7 +528,7 @@ validate_stale_evidence_inputs() {
     "${MISMATCH_STATUS}" != "${RUNTIME_IDENTITY_MISMATCH_STATUS}" ||
     "${MISMATCH_REASON}" != "${STALE_MISMATCH_REASON}" ||
     "${HEALTH_RESPONSE}" != ok ||
-    "${PORT_FORWARD_CLEANUP}" != absent ||
+    "${PORT_FORWARD_CLEANUP}" != no-live-members ||
     "${PORT_FORWARD_PORT_ABSENT}" != true ||
     "${PORT_FORWARD_PID_ABSENT}" != true ||
     "${NAMESPACE_ABSENT}" != true ]]; then
@@ -492,7 +554,7 @@ render_stale_evidence() {
   printf 'POD_IMAGE_ID_SEMANTICS=cri-reported-non-comparable-to-local-config-id\n'
   printf 'DOCKER_VS_POD_COMPARABLE=false\n'
   printf 'HEALTH_RESPONSE=ok\nSELECTED_IPV4_PORT=%s\n' "${SELECTED_IPV4_PORT}"
-  printf 'PORT_FORWARD_CLEANUP=absent\nPORT_FORWARD_PORT_ABSENT=true\n'
+  printf 'PORT_FORWARD_CLEANUP=no-live-members\nPORT_FORWARD_PORT_ABSENT=true\n'
   printf 'PORT_FORWARD_PID_ABSENT=true\nNAMESPACE_ABSENT=true\n'
   printf 'ORDER_PROOF=%s\n' "${STALE_ORDER_PROOF}"
 }
@@ -500,11 +562,12 @@ render_stale_evidence() {
 stale_evidence_is_exact() {
   local file="$1"
   local actual="" expected=""
-  if [[ -L "${file}" || ! -f "${file}" || "$(wc -c <"${file}")" -gt 8192 ]]; then
+  if [[ -L "${file}" || ! -f "${file}" ||
+    "$(run_host_command wc -c <"${file}")" -gt 8192 ]]; then
     printf 'FAIL  runtime-stale evidence staging file is unsafe or oversized\n' >&2
     return 1
   fi
-  bash -n "${file}" || return
+  run_host_command bash -p -n "${file}" || return
   IFS= read -r -d '' actual <"${file}" || true
   IFS= read -r -d '' expected < <(render_stale_evidence) || true
   if [[ "${actual}" != "${expected}" ]]; then
@@ -522,18 +585,20 @@ publish_stale_evidence() {
     return 1
   fi
   target="$(prepare_state_file "${STALE_EVIDENCE_RELATIVE}")" || return
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.stale.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale.XXXXXXXX")" || return
   if ! render_stale_evidence >"${temporary}" ||
     ! stale_evidence_is_exact "${temporary}"; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   fi
   prepared="$(prepare_state_file "${STALE_EVIDENCE_RELATIVE}")" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
-  if [[ "${prepared}" != "${target}" ]] || ! mv -fT -- "${temporary}" "${target}"; then
-    rm -f -- "${temporary}"
+  if [[ "${prepared}" != "${target}" ]] ||
+    ! run_host_command mv -fT -- "${temporary}" "${target}"; then
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  runtime-stale unable to publish stale evidence atomically\n' >&2
     return 1
   fi
@@ -575,13 +640,13 @@ prove_stale_evidence_contract() (
   fi
   HEALTH_RESPONSE=ok
   SELECTED_IPV4_PORT=12345
-  PORT_FORWARD_CLEANUP=absent
+  PORT_FORWARD_CLEANUP=no-live-members
   PORT_FORWARD_PORT_ABSENT=true
   PORT_FORWARD_PID_ABSENT=true
   NAMESPACE_ABSENT=true
   validate_stale_evidence_inputs
-  temporary="$(mktemp)"
-  trap 'rm -f -- "${temporary}"' EXIT
+  temporary="$(run_host_command mktemp)"
+  trap 'run_host_command rm -f -- "${temporary}"' EXIT
   render_stale_evidence >"${temporary}"
   stale_evidence_is_exact "${temporary}"
   printf 'UNEXPECTED=true\n' >>"${temporary}"
@@ -597,10 +662,58 @@ prove_stale_evidence_contract() (
   printf 'PASS  runtime-stale pure evidence and exact mismatch self-check\n'
 )
 
+prove_unbound_stale_cleanup() (
+  local marker proof_pid snapshot state
+  local observed_pid observed_pgrp observed_starttime kernel_state
+  ensure_state_directory runtime-identity || return
+  PORT_FORWARD_START_GATE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.stale-unbound-start.XXXXXXXX")" ||
+    return
+  marker="${PORT_FORWARD_START_GATE}.payload"
+  PORT_FORWARD_STARTTIME=""
+  PORT_FORWARD_LOG=""
+  HEALTH_RESPONSE_FILE=""
+  IDENTITY_RESPONSE_FILE=""
+  set -m
+  (
+    set +m
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    : >"${marker}"
+    run_host_command sleep 30
+  ) &
+  proof_pid=$!
+  PORT_FORWARD_PID="${proof_pid}"
+  set +m
+  builtin trap \
+    'builtin kill -KILL "${proof_pid}" 2>/dev/null || true; builtin wait "${proof_pid}" 2>/dev/null || true' \
+    EXIT
+  snapshot="$(linux_process_snapshot "${proof_pid}")" || return
+  IFS=$'\t' builtin read -r \
+    observed_pid observed_pgrp observed_starttime kernel_state <<<"${snapshot}"
+  [[ "${observed_pid}" == "${proof_pid}" &&
+    "${observed_pgrp}" == "${proof_pid}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  stop_unbound_port_forward
+  proof_pid=""
+  remove_probe_files || return
+  builtin trap - EXIT
+  state="$(linux_process_state "${observed_pid}" "${observed_starttime}")" || return
+  if [[ "${state}" != absent && "${state}" != replaced ]] ||
+    [[ -e "${marker}" || -n "${PORT_FORWARD_PID}" ||
+      -n "${PORT_FORWARD_START_GATE}" ]]; then
+    printf \
+      'FAIL  runtime-stale unbound gated port-forward child survived cleanup\n' >&2
+    return 1
+  fi
+  printf \
+    'PASS  runtime-stale unbound gated child was reaped before payload start\n'
+)
+
 main() {
   local evidence
   if [[ "${1:-}" == --self-check ]]; then
     prove_stale_evidence_contract
+    prove_unbound_stale_cleanup
     return
   fi
   if (($#)); then
@@ -608,9 +721,10 @@ main() {
     return 2
   fi
 
+  docker_target_ensure || return
   trap emergency_cleanup EXIT
   evidence="$(prepare_state_file "${STALE_EVIDENCE_RELATIVE}")" || return
-  rm -f -- "${evidence}"
+  run_host_command rm -f -- "${evidence}"
 
   "${PLATFORM_ROOT}/tools/kubernetes/kind-up.sh" || return
   "${PLATFORM_ROOT}/tools/kubernetes/delete-namespace.sh" >/dev/null || return
@@ -630,8 +744,8 @@ main() {
   publish_stale_evidence || return
   printf 'INFO  runtime-stale order=12 stale_evidence_published=true\n'
 
-  trap - EXIT
   printf 'PASS  runtime-stale loaded A rejected stale same-tag expectation B\n'
+  trap - EXIT
 }
 
 main "$@"

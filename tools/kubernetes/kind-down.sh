@@ -1,20 +1,23 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+KIND_DOWN_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${KIND_DOWN_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || KIND_DOWN_SOURCE_DIR=.
+builtin source "${KIND_DOWN_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+unset KIND_DOWN_SOURCE_DIR
 
 export_owned_cluster() {
   prepare_kubeconfig_output
   if ! kind_command 30s export kubeconfig --name "${PLATFORM_CLUSTER_NAME}" \
     --kubeconfig "${KUBECONFIG}"; then
-    rm -f "${KUBECONFIG}"
+    run_host_command rm -f -- "${KUBECONFIG}"
     return 1
   fi
-  chmod 600 "${KUBECONFIG}"
+  run_host_command chmod 600 "${KUBECONFIG}"
   if ! "${PLATFORM_ROOT}/tools/kubernetes/guard-ownership.sh"; then
-    rm -f "${KUBECONFIG}"
+    run_host_command rm -f -- "${KUBECONFIG}"
     return 1
   fi
 }
@@ -37,9 +40,10 @@ main() {
     return 1
   fi
 
+  docker_target_ensure || return
   presence="$(cluster_presence)"
   if [[ "${presence}" == absent ]]; then
-    rm -f "${KUBECONFIG}"
+    run_host_command rm -f -- "${KUBECONFIG}"
     printf 'PASS  kind-down     cluster already absent\n'
     return 0
   fi
@@ -54,7 +58,7 @@ main() {
     printf 'FAIL  kind-down     cluster still exists after delete\n' >&2
     return 1
   fi
-  rm -f "${KUBECONFIG}"
+  run_host_command rm -f -- "${KUBECONFIG}"
   printf 'PASS  kind-down     deleted owned cluster %s\n' "${PLATFORM_CLUSTER_NAME}"
 }
 

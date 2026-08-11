@@ -1,12 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
+SMOKE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${SMOKE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || SMOKE_SOURCE_DIR=.
+builtin source "${SMOKE_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"
+unset SMOKE_SOURCE_DIR
 
 PORT_FORWARD_PID=""
+PORT_FORWARD_STARTTIME=""
+PORT_FORWARD_START_GATE=""
 PORT_FORWARD_LOG_FILE=""
 HEALTH_RESPONSE_FILE=""
 IDENTITY_RESPONSE_FILE=""
@@ -21,13 +26,14 @@ SOURCE_WORKTREE_CLEAN=false
 
 remove_probe_files() {
   local file status=0
-  for file in "${PORT_FORWARD_LOG_FILE}" "${HEALTH_RESPONSE_FILE}" \
-    "${IDENTITY_RESPONSE_FILE}"; do
-    if [[ -n "${file}" ]] && ! rm -f -- "${file}"; then
+  for file in "${PORT_FORWARD_START_GATE}" "${PORT_FORWARD_LOG_FILE}" \
+    "${HEALTH_RESPONSE_FILE}" "${IDENTITY_RESPONSE_FILE}"; do
+    if [[ -n "${file}" ]] && ! run_host_command rm -f -- "${file}"; then
       status=1
     fi
   done
   if ((status == 0)); then
+    PORT_FORWARD_START_GATE=""
     PORT_FORWARD_LOG_FILE=""
     HEALTH_RESPONSE_FILE=""
     IDENTITY_RESPONSE_FILE=""
@@ -36,15 +42,27 @@ remove_probe_files() {
 }
 
 stop_probe() {
-  local status=0
+  local status=0 remove_status=0
   if [[ -n "${PORT_FORWARD_PID}" ]]; then
-    if runtime_identity_stop_tracked "${PORT_FORWARD_PID}"; then
+    if [[ -z "${PORT_FORWARD_STARTTIME}" ]]; then
+      # The unreleased gate proves the direct child has no payload descendants.
+      builtin kill -KILL "${PORT_FORWARD_PID}" 2>/dev/null || true
+      builtin wait "${PORT_FORWARD_PID}" 2>/dev/null || true
       PORT_FORWARD_PID=""
+    elif runtime_identity_stop_tracked \
+      "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}"; then
+      PORT_FORWARD_PID=""
+      PORT_FORWARD_STARTTIME=""
     else
       status=$?
     fi
   fi
-  remove_probe_files || status=1
+  if ((status == 0)) && [[ -n "${SELECTED_IPV4_PORT}" ]]; then
+    runtime_identity_require_selected_port_absent \
+      "${SELECTED_IPV4_PORT}" || status=$?
+  fi
+  remove_probe_files || remove_status=$?
+  ((status != 0)) || status="${remove_status}"
   return "${status}"
 }
 
@@ -64,14 +82,17 @@ emergency_cleanup() {
 invalidate_positive_evidence() {
   local evidence
   evidence="$(prepare_state_file 'runtime-identity/positive.env')" || return
-  rm -f -- "${evidence}"
+  run_host_command rm -f -- "${evidence}"
 }
 
 capture_initial_source_state() {
   local worktree_state
-  SOURCE_COMMIT="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')" || return
-  SOURCE_TREE="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')" || return
-  worktree_state="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 --untracked-files=all)" || return
+  SOURCE_COMMIT="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    rev-parse --verify 'HEAD^{commit}')" || return
+  SOURCE_TREE="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    rev-parse --verify 'HEAD^{tree}')" || return
+  worktree_state="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    status --porcelain=v1 --untracked-files=all)" || return
   require_exact_source_state "${SOURCE_COMMIT}" "${SOURCE_TREE}" \
     "${SOURCE_COMMIT}" "${SOURCE_TREE}" "${worktree_state}" || return
   SOURCE_WORKTREE_CLEAN=true
@@ -157,34 +178,50 @@ confirm_pod_image_id_stable() {
 
 create_probe_files() {
   ensure_state_directory runtime-identity || return
-  PORT_FORWARD_LOG_FILE="$(mktemp \
+  PORT_FORWARD_LOG_FILE="$(run_host_command mktemp \
     "${PLATFORM_STATE_DIR}/runtime-identity/.port-forward.XXXXXXXX")" || return
-  HEALTH_RESPONSE_FILE="$(mktemp \
+  HEALTH_RESPONSE_FILE="$(run_host_command mktemp \
     "${PLATFORM_STATE_DIR}/runtime-identity/.health-response.XXXXXXXX")" || return
-  IDENTITY_RESPONSE_FILE="$(mktemp \
+  IDENTITY_RESPONSE_FILE="$(run_host_command mktemp \
     "${PLATFORM_STATE_DIR}/runtime-identity/.identity-response.XXXXXXXX")" || return
 }
 
 start_port_forward() {
-  local kubectl_path
-  kubectl_path="$(managed_tool_path kubectl)" || return
+  local status=0
+  docker_target_ensure || return
+  docker_target_assert_frozen || return
   runtime_identity_begin_tracked_cleanup
+  PORT_FORWARD_START_GATE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.port-forward-start.XXXXXXXX")" ||
+    return
   set -m
   (
     set +m
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    [[ "$(<"${PORT_FORWARD_START_GATE}")" == go ]] ||
+      exit "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
     ulimit -c 0
     ulimit -f 64
-    exec timeout --foreground --signal=TERM --kill-after=5s 35s \
-      "${kubectl_path}" --request-timeout=0 port-forward --address=127.0.0.1 \
+    run_managed_tool kubectl --request-timeout=0 \
+      port-forward --address=127.0.0.1 \
       -n "${PLATFORM_NAMESPACE}" service/platform-reference :8080
   ) >>"${PORT_FORWARD_LOG_FILE}" 2>&1 &
   PORT_FORWARD_PID=$!
   set +m
-  if [[ ! "${PORT_FORWARD_PID}" =~ ^[0-9]+$ ]] ||
-    ! runtime_identity_process_or_group_exists "${PORT_FORWARD_PID}"; then
+  if ! linux_process_valid_id "${PORT_FORWARD_PID}"; then
     printf 'FAIL  runtime-id    unable to start tracked dynamic port-forward\n' >&2
     return "${RUNTIME_IDENTITY_PROCESS_STATUS}"
   fi
+  PORT_FORWARD_STARTTIME="$(runtime_identity_capture_group_starttime \
+    "${PORT_FORWARD_PID}")" || status=$?
+  if ((status != 0)); then
+    builtin kill -KILL "${PORT_FORWARD_PID}" 2>/dev/null || true
+    builtin wait "${PORT_FORWARD_PID}" 2>/dev/null || true
+    PORT_FORWARD_PID=""
+    return "${status}"
+  fi
+  printf 'go\n' >"${PORT_FORWARD_START_GATE}" ||
+    return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
 }
 
 wait_for_selected_port() {
@@ -195,8 +232,10 @@ wait_for_selected_port() {
       printf 'INFO  kind-smoke    selected_ipv4_port=%s\n' "${SELECTED_IPV4_PORT}"
       return 0
     fi
-    runtime_identity_process_or_group_exists "${PORT_FORWARD_PID}" || break
-    sleep 0.2
+    runtime_identity_read_group_state \
+      "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" || return
+    [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || break
+    run_host_command sleep 0.2
   done
   printf 'FAIL  runtime-id    dynamic IPv4 port selection was not observed\n' >&2
   return "${RUNTIME_IDENTITY_MALFORMED_STATUS}"
@@ -204,7 +243,8 @@ wait_for_selected_port() {
 
 curl_probe() {
   local path="$1" maximum_bytes="$2" output="$3"
-  curl --fail --silent --show-error --proto '=http' --connect-timeout 1 \
+  run_host_command curl --disable --fail --silent --show-error --proto '=http' \
+    --connect-timeout 1 \
     --max-time 2 --max-filesize "${maximum_bytes}" --output "${output}" \
     "http://127.0.0.1:${SELECTED_IPV4_PORT}${path}"
 }
@@ -233,8 +273,10 @@ probe_exact_endpoints() {
         fi
       fi
     fi
-    runtime_identity_process_or_group_exists "${PORT_FORWARD_PID}" || break
-    sleep 0.5
+    runtime_identity_read_group_state \
+      "${PORT_FORWARD_PID}" "${PORT_FORWARD_STARTTIME}" || return
+    [[ "${RUNTIME_IDENTITY_GROUP_STATE}" == live ]] || break
+    run_host_command sleep 0.5
   done
   printf 'FAIL  runtime-id    bounded exact HTTP probes did not succeed\n' >&2
   return "${RUNTIME_IDENTITY_BOUNDARY_STATUS}"
@@ -272,9 +314,12 @@ delete_runtime_namespace() {
 
 publish_runtime_evidence() {
   local source_commit source_tree worktree_state
-  source_commit="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{commit}')" || return
-  source_tree="$(git -C "${PLATFORM_ROOT}" rev-parse --verify 'HEAD^{tree}')" || return
-  worktree_state="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 --untracked-files=all)" || return
+  source_commit="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    rev-parse --verify 'HEAD^{commit}')" || return
+  source_tree="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    rev-parse --verify 'HEAD^{tree}')" || return
+  worktree_state="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    status --porcelain=v1 --untracked-files=all)" || return
   require_exact_source_state "${SOURCE_COMMIT}" "${SOURCE_TREE}" \
     "${source_commit}" "${source_tree}" "${worktree_state}" || return
   runtime_identity_publish_positive "${SOURCE_COMMIT}" "${SOURCE_TREE}" "${SOURCE_WORKTREE_CLEAN}" \
@@ -312,6 +357,8 @@ prove_probe_cleanup_failure() (
   PORT_FORWARD_LOG_FILE=/tmp/flare-probe-cleanup-log
   HEALTH_RESPONSE_FILE=/tmp/flare-probe-cleanup-health
   IDENTITY_RESPONSE_FILE=/tmp/flare-probe-cleanup-identity
+  # Proves that the host-command boundary rejects an inherited function.
+  # shellcheck disable=SC2317,SC2329
   rm() { return 1; }
   if remove_probe_files >/dev/null 2>&1; then
     printf 'FAIL  runtime-red   probe-file cleanup failure was accepted\n' >&2
@@ -327,18 +374,85 @@ prove_probe_cleanup_failure() (
   printf 'PASS  runtime-red   probe-file cleanup failure retained retry state\n'
 )
 
+prove_selected_port_cleanup_red() (
+  local output status=0 curl_status=0
+  SELECTED_IPV4_PORT=43127
+  # The canonical helper invokes this test double dynamically.
+  # shellcheck disable=SC2317,SC2329
+  run_host_command() {
+    [[ "${1:-}" == curl ]] || return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+    return "${curl_status}"
+  }
+  output="$(runtime_identity_require_selected_port_absent \
+    "${SELECTED_IPV4_PORT}" 2>&1)" || status=$?
+  if [[ "${status}" -ne "${RUNTIME_IDENTITY_PROCESS_STATUS}" ||
+    "${output}" != 'FAIL  runtime-id    selected port remained reachable after port-forward cleanup' ]]; then
+    printf 'FAIL  runtime-red   reachable selected port was accepted after cleanup\n' >&2
+    return 1
+  fi
+  curl_status=7
+  runtime_identity_require_selected_port_absent "${SELECTED_IPV4_PORT}"
+  [[ "${RUNTIME_IDENTITY_PORT_FORWARD_PORT_ABSENT}" == true ]] || return 1
+  printf 'PASS  runtime-red   only curl status 7 proves selected-port absence\n'
+)
+
+prove_unbound_probe_cleanup() (
+  local marker snapshot state
+  local observed_pid observed_pgrp observed_starttime kernel_state
+  ensure_state_directory runtime-identity || return
+  PORT_FORWARD_START_GATE="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.unbound-start.XXXXXXXX")" || return
+  marker="${PORT_FORWARD_START_GATE}.payload"
+  PORT_FORWARD_STARTTIME=""
+  PORT_FORWARD_LOG_FILE=""
+  HEALTH_RESPONSE_FILE=""
+  IDENTITY_RESPONSE_FILE=""
+  SELECTED_IPV4_PORT=""
+  set -m
+  (
+    set +m
+    while [[ ! -s "${PORT_FORWARD_START_GATE}" ]]; do :; done
+    : >"${marker}"
+    run_host_command sleep 30
+  ) &
+  PORT_FORWARD_PID=$!
+  set +m
+  builtin trap 'builtin kill -KILL "${PORT_FORWARD_PID}" 2>/dev/null || true
+    builtin wait "${PORT_FORWARD_PID}" 2>/dev/null || true' EXIT
+  snapshot="$(linux_process_snapshot "${PORT_FORWARD_PID}")" || return
+  IFS=$'\t' builtin read -r \
+    observed_pid observed_pgrp observed_starttime kernel_state <<<"${snapshot}"
+  [[ "${observed_pid}" == "${PORT_FORWARD_PID}" &&
+    "${observed_pgrp}" == "${PORT_FORWARD_PID}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  stop_probe || return
+  builtin trap - EXIT
+  state="$(linux_process_state "${observed_pid}" "${observed_starttime}")" || return
+  if [[ "${state}" != absent && "${state}" != replaced ]] ||
+    [[ -e "${marker}" || -n "${PORT_FORWARD_PID}" ||
+      -n "${PORT_FORWARD_START_GATE}" ]]; then
+    printf 'FAIL  runtime-red   unbound gated port-forward child survived cleanup\n' >&2
+    return 1
+  fi
+  printf \
+    'PASS  runtime-id    unbound gated port-forward child was reaped before payload start\n'
+)
+
 main() {
   local status=0 cleanup_status=0
   if [[ "${1:-}" == --self-check ]]; then
     [[ $# -eq 1 ]] || return 2
     prove_source_state_guard
     prove_probe_cleanup_failure
+    prove_selected_port_cleanup_red
+    prove_unbound_probe_cleanup
     return
   fi
   if (($#)); then
     printf 'FAIL  kind-smoke    usage: smoke.sh [--self-check]\n' >&2
     return 2
   fi
+  docker_target_ensure || return
   trap emergency_cleanup EXIT
   invalidate_positive_evidence || status=$?
   if ((status == 0)); then capture_initial_source_state || status=$?; fi

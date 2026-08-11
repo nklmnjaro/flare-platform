@@ -1,13 +1,16 @@
-#!/usr/bin/env -S -u BASH_ENV -u ENV bash
-# shellcheck shell=bash
+#!/bin/bash -p
 set -euo pipefail
 
+DOCTOR_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${DOCTOR_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || DOCTOR_SOURCE_DIR=.
+
 # shellcheck source=../common/env.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+builtin source "${DOCTOR_SOURCE_DIR}/../common/env.sh"
 # shellcheck source=../common/tooling.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
 # shellcheck source=environment-profile.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/environment-profile.sh"
+builtin source "${PLATFORM_ROOT}/tools/bootstrap/environment-profile.sh"
+unset DOCTOR_SOURCE_DIR
 
 base_only=false
 machine=false
@@ -70,6 +73,8 @@ render_human_result() {
     "${ENVIRONMENT_PROFILE_DOCKER_CLIENT_API}" \
     "${ENVIRONMENT_PROFILE_DOCKER_SERVER_API}"
   printf 'PASS  docker-surface advertised stdin/network/pull/cache/plain flags\n'
+  printf 'PASS  docker-target local-unix frozen fingerprint=%s builder-contract=daemon-default-required\n' \
+    "${DOCKER_TARGET_FINGERPRINT}"
   printf 'INFO  buildkit      result execution is proved by make verify-runtime\n'
   if [[ "${ENVIRONMENT_PROFILE_PROJECT_STATE}" == ready_for_bootstrap ]]; then
     printf 'INFO  project       READY_FOR_BOOTSTRAP; run make bootstrap\n'

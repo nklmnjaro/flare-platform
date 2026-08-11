@@ -1,10 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
+REPO_POLICY_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${REPO_POLICY_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  REPO_POLICY_SOURCE_DIR=.
+builtin source "${REPO_POLICY_SOURCE_DIR}/../common/env.sh"
+unset REPO_POLICY_SOURCE_DIR
 
 check_generated_state() {
-  if git ls-files '.platform/**' | grep -q .; then
+  if run_host_command git ls-files '.platform/**' |
+    run_host_command grep -q .; then
     printf 'FAIL  policy        .platform state must never be tracked\n' >&2
     return 1
   fi
@@ -13,8 +18,8 @@ check_generated_state() {
 main() {
   local failed=0
   check_generated_state || failed=1
-  git diff --check || failed=1
-  git diff --cached --check || failed=1
+  run_host_command git diff --no-ext-diff --no-textconv --check || failed=1
+  run_host_command git diff --cached --no-ext-diff --no-textconv --check || failed=1
   if ((failed)); then
     return 1
   fi

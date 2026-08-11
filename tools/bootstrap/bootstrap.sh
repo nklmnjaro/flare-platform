@@ -1,13 +1,17 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh" || exit 1
-source "$(dirname -- "${BASH_SOURCE[0]}")/aqua-trust.sh" || exit 1
+BOOTSTRAP_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${BOOTSTRAP_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  BOOTSTRAP_SOURCE_DIR=.
+builtin source "${BOOTSTRAP_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh"
+unset BOOTSTRAP_SOURCE_DIR
 
 require_checksum_enabled() {
   local counts
   counts="$(
-    awk '
+    run_host_command awk '
       /^[[:space:]]*require_checksum[[:space:]]*:/ { keys++ }
       /^[[:space:]]*require_checksum[[:space:]]*:[[:space:]]*true[[:space:]]*$/ {
         locked++
@@ -30,6 +34,8 @@ enforce_ci_checksum_policy() {
 
 inspect_cached_aqua() {
   local status=0
+  # Defined by the sourced Aqua trust module.
+  # shellcheck disable=SC2153
   aqua_cached_candidate_status "${AQUA_BIN}" || status=$?
   case "${status}" in
     0) aqua_verify_exact_version "${AQUA_BIN}" "bootstrap" "cached" ;;
@@ -64,7 +70,7 @@ cleanup_aqua_staging() {
   local staging="$1"
   case "${staging}" in
     "${AQUA_BOOTSTRAP_DIR}"/.aqua-install.*)
-      rm -rf -- "${staging}"
+      run_host_command rm -rf -- "${staging}"
       ;;
     *)
       printf 'FAIL  bootstrap     refusing unsafe Aqua staging cleanup: %s\n' \
@@ -82,7 +88,8 @@ publish_verified_aqua() {
   local aqua_bin
   local status=0
 
-  staging="$(mktemp -d "${AQUA_BOOTSTRAP_DIR}/.aqua-install.XXXXXXXXXX")" || {
+  staging="$(run_host_command mktemp -d \
+    "${AQUA_BOOTSTRAP_DIR}/.aqua-install.XXXXXXXXXX")" || {
     printf 'FAIL  bootstrap     unable to create guarded Aqua staging directory\n' >&2
     return 1
   }
@@ -95,7 +102,8 @@ publish_verified_aqua() {
   extract_dir="${staging}/extract"
   candidate="${extract_dir}/aqua"
 
-  if ! curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  if ! run_host_command curl --disable --fail --location --proto '=https' \
+    --proto-redir '=https' --tlsv1.2 \
     --connect-timeout 10 --max-time 120 --retry 3 --retry-connrefused \
     --output "${archive}" "${AQUA_URL}"; then
     printf 'FAIL  bootstrap     verified Aqua download failed\n' >&2
@@ -106,10 +114,10 @@ publish_verified_aqua() {
   elif ! aqua_file_sha256_matches "${AQUA_SHA256}" "${archive}"; then
     printf 'FAIL  bootstrap     downloaded Aqua archive checksum mismatch\n' >&2
     status=1
-  elif ! (umask 077 && mkdir -- "${extract_dir}"); then
+  elif ! (umask 077 && run_host_command mkdir -- "${extract_dir}"); then
     printf 'FAIL  bootstrap     unable to create guarded Aqua extraction directory\n' >&2
     status=1
-  elif ! tar -xzf "${archive}" -C "${extract_dir}" aqua; then
+  elif ! run_host_command tar -xzf "${archive}" -C "${extract_dir}" aqua; then
     printf 'FAIL  bootstrap     unable to extract verified Aqua archive\n' >&2
     status=1
   elif [[ -L "${candidate}" || ! -f "${candidate}" ]]; then
@@ -118,7 +126,7 @@ publish_verified_aqua() {
   elif ! aqua_file_sha256_matches "${AQUA_BIN_SHA256}" "${candidate}"; then
     printf 'FAIL  bootstrap     extracted Aqua binary checksum mismatch\n' >&2
     status=1
-  elif ! chmod 0755 -- "${candidate}"; then
+  elif ! run_host_command chmod 0755 -- "${candidate}"; then
     printf 'FAIL  bootstrap     unable to make verified Aqua executable\n' >&2
     status=1
   elif ! aqua_verify_exact_version "${candidate}" "bootstrap" "extracted"; then
@@ -129,7 +137,8 @@ publish_verified_aqua() {
       printf 'FAIL  bootstrap     state helper returned unexpected Aqua path\n' >&2
       status=1
     fi
-    if [[ "${status}" == "0" ]] && ! mv -fT -- "${candidate}" "${AQUA_BIN}"; then
+    if [[ "${status}" == "0" ]] &&
+      ! run_host_command mv -fT -- "${candidate}" "${AQUA_BIN}"; then
       printf 'FAIL  bootstrap     unable to publish verified Aqua atomically\n' >&2
       status=1
     fi
@@ -167,10 +176,11 @@ install_aqua() {
 }
 
 main() {
-  "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only || return
+  run_host_command bash -p "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" \
+    --base-only || return
   enforce_ci_checksum_policy || return
   install_aqua || return
-  (cd "${PLATFORM_ROOT}" && "${AQUA_BIN}" install) || return
+  (builtin cd -- "${PLATFORM_ROOT}" && run_project_aqua_install) || return
   verify_existing_aqua_proxy bootstrap || return
   printf 'PASS  bootstrap     pinned tools installed under %s\n' "${AQUA_ROOT_DIR}"
 }

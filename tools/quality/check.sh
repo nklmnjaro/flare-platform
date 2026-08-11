@@ -1,8 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+CHECK_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${CHECK_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] || CHECK_SOURCE_DIR=.
+builtin source "${CHECK_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+unset CHECK_SOURCE_DIR
 
 main() {
   local tool

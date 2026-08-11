@@ -1,11 +1,15 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash -p
+builtin set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/tooling.sh"
+RUN_MANAGED_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${RUN_MANAGED_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  RUN_MANAGED_SOURCE_DIR=.
+builtin source "${RUN_MANAGED_SOURCE_DIR}/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin unset RUN_MANAGED_SOURCE_DIR
 
 if (($# == 0)); then
-  printf 'FAIL  tooling       managed command name is required\n' >&2
+  builtin printf 'FAIL  tooling       managed command name is required\n' >&2
   exit 2
 fi
 

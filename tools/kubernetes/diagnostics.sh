@@ -1,9 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+DIAGNOSTICS_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${DIAGNOSTICS_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  DIAGNOSTICS_SOURCE_DIR=.
+builtin source "${DIAGNOSTICS_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+builtin unset DIAGNOSTICS_SOURCE_DIR
 
 MAX_CAPTURE_BYTES=131072
 DIAGNOSTICS_TARGET="${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"
@@ -13,27 +17,28 @@ capture() {
   shift
   local -a pipeline_status=()
   local payload size status truncated=false
-  payload="$(mktemp "${DIAGNOSTICS_TARGET}/.capture.XXXXXX")"
+  payload="$(run_host_command mktemp "${DIAGNOSTICS_TARGET}/.capture.XXXXXX")"
 
   set +e
-  "$@" 2>&1 | head -c "$((MAX_CAPTURE_BYTES + 1))" >"${payload}"
+  "$@" 2>&1 | run_host_command head -c "$((MAX_CAPTURE_BYTES + 1))" \
+    >"${payload}"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
   status="${pipeline_status[0]}"
   if ((pipeline_status[1] != 0)); then
-    rm -f "${payload}"
+    run_host_command rm -f -- "${payload}"
     printf 'FAIL  diagnostics   unable to bound %s capture\n' "${name}" >&2
     return 1
   fi
 
-  size="$(wc -c <"${payload}" | tr -d ' ')"
+  size="$(run_host_command wc -c <"${payload}")"
   ((size > MAX_CAPTURE_BYTES)) && truncated=true
   {
     printf 'exit_code=%s\n' "${status}"
     printf 'truncated=%s\n' "${truncated}"
-    head -c "${MAX_CAPTURE_BYTES}" "${payload}"
+    run_host_command head -c "${MAX_CAPTURE_BYTES}" "${payload}"
   } >"${DIAGNOSTICS_TARGET}/${name}.txt"
-  rm -f "${payload}"
+  run_host_command rm -f -- "${payload}"
 }
 
 main() {

@@ -1,30 +1,37 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../kubernetes/runtime.sh"
+DIAGNOSTICS_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${DIAGNOSTICS_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  DIAGNOSTICS_SOURCE_DIR=.
+builtin source "${DIAGNOSTICS_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+unset DIAGNOSTICS_SOURCE_DIR
 
 first_line() {
   local tool="$1"
-  local command_path="${tool}"
-  if is_managed_tool "${tool}"; then
-    command_path="$(managed_tool_path "${tool}")" || return
-  fi
+  local output
   case "${tool}" in
     go)
-      run_bounded 5s "${command_path}" version
+      output="$(run_managed_tool_bounded 5s go version 2>&1)" || return
+      ;;
+    docker)
+      docker_target_ensure || return
+      output="$(docker_command 5s --version 2>&1)" || return
       ;;
     kind)
-      run_bounded 5s "${command_path}" version
+      output="$(kind_command 5s version 2>&1)" || return
       ;;
     kubectl)
-      run_bounded 5s "${command_path}" version --client=true
+      output="$(kubectl_command 5s version --client=true 2>&1)" || return
       ;;
     *)
-      run_bounded 5s "${command_path}" --version
+      output="$(run_managed_tool_bounded 5s "${tool}" --version 2>&1)" || return
       ;;
-  esac 2>&1 | head -n 1 | cut -c 1-300 || true
+  esac
+  output="${output%%$'\n'*}"
+  printf '%.300s\n' "${output}"
 }
 
 write_tool_inventory() {
@@ -42,14 +49,16 @@ write_summary() {
   local dirty_count
   local target
   target="$(prepare_state_file "diagnostics/raw/platform.txt")" || return
-  dirty_count="$(git -C "${PLATFORM_ROOT}" status --porcelain=v1 | wc -l | tr -d ' ')"
+  dirty_count="$(run_host_command git -C "${PLATFORM_ROOT}" \
+    status --porcelain=v1 | run_host_command wc -l)"
+  dirty_count="${dirty_count//[[:space:]]/}"
   {
     printf 'schema=flare-platform-diagnostics-v1\n'
-    printf 'head=%s\n' "$(git -C "${PLATFORM_ROOT}" rev-parse HEAD)"
-    printf 'branch=%s\n' "$(git -C "${PLATFORM_ROOT}" branch --show-current)"
+    printf 'head=%s\n' "$(run_host_command git -C "${PLATFORM_ROOT}" rev-parse HEAD)"
+    printf 'branch=%s\n' "$(run_host_command git -C "${PLATFORM_ROOT}" branch --show-current)"
     printf 'dirty_entries=%s\n' "${dirty_count}"
-    printf 'os=%s\n' "$(uname -s)"
-    printf 'arch=%s\n' "$(uname -m)"
+    printf 'os=%s\n' "$(run_host_command uname -s)"
+    printf 'arch=%s\n' "$(run_host_command uname -m)"
     write_tool_inventory
   } >"${target}"
 }
@@ -94,9 +103,9 @@ package_diagnostics() {
   fi
   archive="$(prepare_state_file "platform-diagnostics.zip")" || return
   prepare_state_file "platform-diagnostics.zip.sha256" >/dev/null || return
-  rm -f "${archive}" "${archive}.sha256"
+  run_host_command rm -f -- "${archive}" "${archive}.sha256"
   (
-    cd "${PLATFORM_ROOT}/tools/artifacts/archive"
+    builtin cd "${PLATFORM_ROOT}/tools/artifacts/archive"
     run_managed_tool go run . pack \
       --source "${PLATFORM_DIAGNOSTICS_DIR}" --output "${archive}"
   )
@@ -104,6 +113,7 @@ package_diagnostics() {
 }
 
 main() {
+  docker_target_ensure || return
   ensure_state_directory "diagnostics/raw" || return
   write_summary
   collect_cluster_diagnostics

@@ -1,9 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/runtime.sh"
+NEGATIVE_SMOKE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${NEGATIVE_SMOKE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  NEGATIVE_SMOKE_SOURCE_DIR=.
+builtin source "${NEGATIVE_SMOKE_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
+unset NEGATIVE_SMOKE_SOURCE_DIR
 
 STARTUP_MARKER="intentional startup failure requested"
 NEGATIVE_EVIDENCE_SCHEMA="flare-platform-runtime-identity-negative-v1"
@@ -37,7 +41,7 @@ observe_expected_failure() {
         return 0
       fi
     done <<<"${output}"
-    sleep 1
+    run_host_command sleep 1
   done
   return 1
 }
@@ -56,7 +60,8 @@ diagnostics_are_bounded() {
       printf 'FAIL  diagnostics   expected capture is missing: %s\n' "${capture}" >&2
       return 1
     fi
-    if ! size="$(wc -c <"${file}")" || [[ ! "${size}" =~ ^[0-9]+$ ]]; then
+    if ! size="$(run_host_command wc -c <"${file}")" ||
+      [[ ! "${size}" =~ ^[0-9]+$ ]]; then
       printf 'FAIL  diagnostics   unable to measure capture: %s\n' "${file}" >&2
       return 1
     fi
@@ -65,7 +70,7 @@ diagnostics_are_bounded() {
       return 1
     fi
   done
-  if ! grep -Fq "${STARTUP_MARKER}" "${target}/logs.txt"; then
+  if ! run_host_command grep -Fq "${STARTUP_MARKER}" "${target}/logs.txt"; then
     printf 'FAIL  diagnostics   expected startup marker is absent from evidence\n' >&2
     return 1
   fi
@@ -99,30 +104,30 @@ publish_negative_evidence() {
   local target
   local temporary
   target="$(prepare_state_file "${NEGATIVE_EVIDENCE_RELATIVE}")" || return
-  temporary="$(mktemp -- "${target}.tmp.XXXXXX")" || {
+  temporary="$(run_host_command mktemp -- "${target}.tmp.XXXXXX")" || {
     printf 'FAIL  kind-negative unable to create evidence staging file\n' >&2
     return 1
   }
   if ! render_negative_evidence >"${temporary}"; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  kind-negative unable to render evidence\n' >&2
     return 1
   fi
   if ! negative_evidence_is_exact "${temporary}"; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   fi
   prepared="$(prepare_state_file "${NEGATIVE_EVIDENCE_RELATIVE}")" || {
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     return 1
   }
   if [[ "${prepared}" != "${target}" ]]; then
-    rm -f -- "${temporary}"
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  kind-negative state helper returned unexpected evidence path\n' >&2
     return 1
   fi
-  if ! mv -fT -- "${temporary}" "${target}"; then
-    rm -f -- "${temporary}"
+  if ! run_host_command mv -fT -- "${temporary}" "${target}"; then
+    run_host_command rm -f -- "${temporary}"
     printf 'FAIL  kind-negative unable to publish evidence atomically\n' >&2
     return 1
   fi
@@ -131,15 +136,15 @@ publish_negative_evidence() {
 prove_negative_evidence_format() (
   local expected_marker="${STARTUP_MARKER}"
   local temporary
-  temporary="$(mktemp)"
-  trap 'rm -f -- "${temporary}"' EXIT
+  temporary="$(run_host_command mktemp)"
+  trap 'run_host_command rm -f -- "${temporary}"' EXIT
   render_negative_evidence >"${temporary}"
   negative_evidence_is_exact "${temporary}"
   if ! (
     unset SCHEMA STARTUP_MARKER NAMESPACE_ABSENT
     # The generated file is trusted test output and must remain sourceable.
     # shellcheck disable=SC1090
-    source "${temporary}"
+    builtin source "${temporary}"
     # These variables are assigned by the sourced evidence above.
     # shellcheck disable=SC2153
     [[ "${SCHEMA}" == "${NEGATIVE_EVIDENCE_SCHEMA}" &&
@@ -160,12 +165,14 @@ prove_negative_evidence_format() (
 prove_diagnostics_measurement_failure() (
   local capture status
   local -a captures=(nodes resources events describe-pods logs)
-  PLATFORM_DIAGNOSTICS_DIR="$(mktemp -d)"
-  trap 'rm -rf -- "${PLATFORM_DIAGNOSTICS_DIR}"' EXIT
-  mkdir -p -- "${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"
+  PLATFORM_DIAGNOSTICS_DIR="$(run_host_command mktemp -d)"
+  trap 'run_host_command rm -rf -- "${PLATFORM_DIAGNOSTICS_DIR}"' EXIT
+  run_host_command mkdir -p -- "${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"
   for capture in "${captures[@]}"; do
     printf '%s\n' "${STARTUP_MARKER}" >"${PLATFORM_DIAGNOSTICS_DIR}/kubernetes/${capture}.txt"
   done
+  # Proves that the host-command boundary rejects an inherited function.
+  # shellcheck disable=SC2317,SC2329
   wc() { return 1; }
   if diagnostics_are_bounded >/dev/null 2>&1; then
     printf 'FAIL  kind-negative diagnostics measurement failure was accepted\n' >&2
@@ -190,10 +197,11 @@ main() {
     prove_diagnostics_measurement_failure
     return
   fi
+  docker_target_ensure || return
   trap emergency_cleanup EXIT
 
   evidence="$(prepare_state_file "${NEGATIVE_EVIDENCE_RELATIVE}")" || return
-  rm -f -- "${evidence}"
+  run_host_command rm -f -- "${evidence}"
 
   "${PLATFORM_ROOT}/tools/kubernetes/kind-up.sh" || status=1
   if [[ "${status}" == 0 ]] && ! load_reference_image; then

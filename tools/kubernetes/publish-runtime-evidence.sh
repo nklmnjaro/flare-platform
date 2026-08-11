@@ -1,8 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+# Embedded awk programs intentionally use awk fields.
+# shellcheck disable=SC2016
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/identity.sh"
+PUBLISH_EVIDENCE_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${PUBLISH_EVIDENCE_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  PUBLISH_EVIDENCE_SOURCE_DIR=.
+builtin source "${PUBLISH_EVIDENCE_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/kubernetes/identity.sh"
+builtin unset PUBLISH_EVIDENCE_SOURCE_DIR
 
 POSITIVE_KEYS=(
   SCHEMA SOURCE_COMMIT SOURCE_TREE SOURCE_WORKTREE_CLEAN
@@ -19,7 +25,8 @@ POSITIVE_KEYS=(
   BUILD_LOG_SECOND_SHA256 BUILD_LOG_SECOND_RESULT_CONFIG_ID
   POD_IMAGE_ID POD_IMAGE_ID_SEMANTICS DOCKER_VS_POD_COMPARABLE
   RUNNING_EXECUTABLE_SHA256 HEALTH_RESPONSE SELECTED_IPV4_PORT
-  PORT_FORWARD_CLEANUP PORT_FORWARD_PID_ABSENT NAMESPACE_ABSENT CLUSTER_CLEANUP
+  PORT_FORWARD_CLEANUP PORT_FORWARD_PORT_ABSENT PORT_FORWARD_PID_ABSENT
+  NAMESPACE_ABSENT CLUSTER_CLEANUP
 )
 STALE_KEYS=(
   SCHEMA HOST_BINARY_SHA256_A HOST_BINARY_SHA256_B
@@ -42,8 +49,8 @@ evidence_failure() {
 
 assert_no_nul_bytes() {
   local file="$1" bytes="$2" dump compact
-  dump="$(od -An -v -tx1 -- "${file}")" || return
-  compact="$(printf '%s' "${dump}" | tr -d '[:space:]')" || return
+  dump="$(run_host_command od -An -v -tx1 -- "${file}")" || return
+  compact="$(printf '%s' "${dump}" | run_host_command tr -d '[:space:]')" || return
   if [[ "${dump}" =~ (^|[[:space:]])00([[:space:]]|$) ]] ||
     ((${#compact} != bytes * 2)); then
     evidence_failure 'journey evidence contains unsupported binary bytes' || return
@@ -52,20 +59,20 @@ assert_no_nul_bytes() {
 
 assert_key_order() {
   local file="$1" schema="$2" maximum="$3"
-  local bytes expected_count index line_count
+  local bytes expected_count index line_count observed_schema
   local -a actual=()
   shift 3
   expected_count=$#
   if [[ -L "${file}" || ! -f "${file}" ]]; then
     evidence_failure 'required journey evidence is missing or unsafe' || return
   fi
-  bytes="$(wc -c <"${file}")" || return
-  line_count="$(wc -l <"${file}")" || return
+  bytes="$(run_host_command wc -c <"${file}")" || return
+  line_count="$(run_host_command wc -l <"${file}")" || return
   if ((bytes < 1 || bytes > maximum || line_count != expected_count)); then
     evidence_failure 'journey evidence exceeds its exact record boundary' || return
   fi
   assert_no_nul_bytes "${file}" "${bytes}" || return
-  mapfile -t actual < <(cut -d= -f1 -- "${file}") || return
+  mapfile -t actual < <(run_host_command cut -d= -f1 -- "${file}") || return
   if ((${#actual[@]} != expected_count)); then
     evidence_failure 'journey evidence key count is not exact' || return
   fi
@@ -75,8 +82,9 @@ assert_key_order() {
     fi
     shift
   done
-  if [[ "$(sed -n '1p' -- "${file}")" != "SCHEMA=${schema}" ]] ||
-    ! bash -n "${file}"; then
+  observed_schema="$(run_host_command sed -n '1p' -- "${file}")" || return
+  if [[ "${observed_schema}" != "SCHEMA=${schema}" ]] ||
+    ! run_host_command bash -p -n "${file}"; then
     evidence_failure 'journey evidence schema or shell encoding is invalid' || return
   fi
 }
@@ -136,6 +144,7 @@ assert_positive_semantics() {
   local docker_first docker_second
   local build_result_first build_result_second source_commit source_tree
   local build_source_commit build_source_tree archive_sha stream_first stream_second
+  assert_cleanup_semantics "${file}" || return
   assert_positive_formats "${file}" || return
   first="$(evidence_value "${file}" HOST_BINARY_SHA256)" || return
   second="$(evidence_value "${file}" HOST_BINARY_SHA256_SECOND)" || return
@@ -174,7 +183,8 @@ assert_positive_semantics() {
     "$(evidence_value "${file}" POD_IMAGE_ID_SEMANTICS)" != cri-reported-non-comparable-to-local-config-id ||
     "$(evidence_value "${file}" DOCKER_VS_POD_COMPARABLE)" != false ||
     "$(evidence_value "${file}" HEALTH_RESPONSE)" != ok ||
-    "$(evidence_value "${file}" PORT_FORWARD_CLEANUP)" != absent ||
+    "$(evidence_value "${file}" PORT_FORWARD_CLEANUP)" != no-live-members ||
+    "$(evidence_value "${file}" PORT_FORWARD_PORT_ABSENT)" != true ||
     "$(evidence_value "${file}" PORT_FORWARD_PID_ABSENT)" != true ||
     "$(evidence_value "${file}" NAMESPACE_ABSENT)" != true ||
     "$(evidence_value "${file}" CLUSTER_CLEANUP)" != deferred-to-verify-runtime ]]; then
@@ -189,6 +199,14 @@ assert_positive_semantics() {
     ! "${context_bytes}" =~ ^[1-9][0-9]{0,8}$ ]] ||
     ((10#${port} < 1 || 10#${port} > 65535 || host_bytes >= context_bytes)); then
     evidence_failure 'positive numeric evidence is inconsistent' || return
+  fi
+}
+
+assert_cleanup_semantics() {
+  local file="$1"
+  if [[ "$(evidence_value "${file}" PORT_FORWARD_CLEANUP)" != no-live-members ]]; then
+    evidence_failure \
+      'journey evidence uses obsolete process-group cleanup semantics' || return
   fi
 }
 
@@ -216,6 +234,7 @@ assert_stale_formats() {
 
 assert_stale_semantics() {
   local file="$1" actual expected mismatch_reason startup_marker manifest_a manifest_b
+  assert_cleanup_semantics "${file}" || return
   assert_stale_formats "${file}" || return
   actual="$(evidence_value "${file}" RUNNING_EXECUTABLE_SHA256)" || return
   expected="$(evidence_value "${file}" EXPECTED_EXECUTABLE_SHA256)" || return
@@ -237,7 +256,7 @@ assert_stale_semantics() {
   "$(evidence_value "${file}" MISMATCH_REASON)" != "${mismatch_reason}" ||
   "$(evidence_value "${file}" DOCKER_VS_POD_COMPARABLE)" != false ||
   "$(evidence_value "${file}" HEALTH_RESPONSE)" != ok ||
-  "$(evidence_value "${file}" PORT_FORWARD_CLEANUP)" != absent ||
+  "$(evidence_value "${file}" PORT_FORWARD_CLEANUP)" != no-live-members ||
   "$(evidence_value "${file}" PORT_FORWARD_PORT_ABSENT)" != true ||
   "$(evidence_value "${file}" PORT_FORWARD_PID_ABSENT)" != true ||
   "$(evidence_value "${file}" NAMESPACE_ABSENT)" != true ]]; then
@@ -250,22 +269,25 @@ snapshot_evidence() {
   if [[ -L "${source}" || ! -f "${source}" ]]; then
     evidence_failure 'required journey evidence is missing or unsafe' || return
   fi
-  bytes="$(stat -c '%s' "${source}")" || return
+  bytes="$(run_host_command stat -c '%s' "${source}")" || return
   if ((bytes < 1 || bytes > maximum)); then
     evidence_failure 'journey evidence exceeds its snapshot boundary' || return
   fi
-  snapshot="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.${label}.XXXXXXXX")" || return
-  if ! timeout --signal=TERM --kill-after=1s 5s \
-    head -c "$((maximum + 1))" -- "${source}" >"${snapshot}"; then
-    rm -f -- "${snapshot}" || return
+  local head_path
+  head_path="$(host_command_path head)" || return
+  snapshot="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.${label}.XXXXXXXX")" || return
+  if ! run_host_command timeout --signal=TERM --kill-after=1s 5s \
+    "${head_path}" -c "$((maximum + 1))" -- "${source}" >"${snapshot}"; then
+    run_host_command rm -f -- "${snapshot}" || return
     evidence_failure 'unable to snapshot journey evidence' || return
   fi
-  bytes="$(stat -c '%s' "${snapshot}")" || {
-    rm -f -- "${snapshot}" || return
+  bytes="$(run_host_command stat -c '%s' "${snapshot}")" || {
+    run_host_command rm -f -- "${snapshot}" || return
     return 1
   }
   if ((bytes < 1 || bytes > maximum)); then
-    rm -f -- "${snapshot}" || return
+    run_host_command rm -f -- "${snapshot}" || return
     evidence_failure 'journey evidence changed while being snapshotted' || return
   fi
   printf '%s\n' "${snapshot}"
@@ -273,8 +295,11 @@ snapshot_evidence() {
 
 assert_source_matches_snapshot() {
   local source="$1" snapshot="$2"
+  local cmp_path
+  cmp_path="$(host_command_path cmp)" || return
   if [[ -L "${source}" || ! -f "${source}" ]] ||
-    ! timeout --signal=TERM --kill-after=1s 5s cmp --silent -- "${source}" "${snapshot}"; then
+    ! run_host_command timeout --signal=TERM --kill-after=1s 5s \
+      "${cmp_path}" --silent -- "${source}" "${snapshot}"; then
     evidence_failure 'journey evidence changed during aggregate publication' || return
   fi
 }
@@ -298,10 +323,13 @@ prefix_evidence() {
 render_aggregate() {
   local positive="$1" stale="$2" negative="$3" final_state="$4" repeated_state="$5"
   local positive_sha stale_sha negative_sha
-  positive_sha="$(sha256sum -- "${positive}" | awk '{print $1}')" || return
-  stale_sha="$(sha256sum -- "${stale}" | awk '{print $1}')" || return
-  negative_sha="$(sha256sum -- "${negative}" | awk '{print $1}')" || return
-  printf 'SCHEMA=flare-platform-runtime-identity-evidence-v2\n'
+  positive_sha="$(run_host_command sha256sum -- "${positive}" |
+    run_host_command awk '{print $1}')" || return
+  stale_sha="$(run_host_command sha256sum -- "${stale}" |
+    run_host_command awk '{print $1}')" || return
+  negative_sha="$(run_host_command sha256sum -- "${negative}" |
+    run_host_command awk '{print $1}')" || return
+  printf 'SCHEMA=flare-platform-runtime-identity-evidence-v3\n'
   printf 'POSITIVE_EVIDENCE_SHA256=%s\nSTALE_EVIDENCE_SHA256=%s\n' \
     "${positive_sha}" "${stale_sha}"
   printf 'NEGATIVE_EVIDENCE_SHA256=%s\n' "${negative_sha}"
@@ -319,13 +347,14 @@ publish_aggregate() (
   local negative="${PLATFORM_STATE_DIR}/runtime-identity/negative.env"
   local positive_snapshot="" stale_snapshot="" negative_snapshot=""
   local target temporary="" bytes prepared
-  trap 'rm -f -- "${positive_snapshot}" "${stale_snapshot}" "${negative_snapshot}" "${temporary}"' EXIT
+  trap 'run_host_command rm -f -- "${positive_snapshot}" "${stale_snapshot}" \
+    "${negative_snapshot}" "${temporary}"' EXIT
   positive_snapshot="$(snapshot_evidence "${positive}" positive-snapshot 8192)" || return
   stale_snapshot="$(snapshot_evidence "${stale}" stale-snapshot 8192)" || return
   negative_snapshot="$(snapshot_evidence "${negative}" negative-snapshot 1024)" || return
-  assert_key_order "${positive_snapshot}" flare-platform-runtime-identity-positive-v2 8192 \
+  assert_key_order "${positive_snapshot}" flare-platform-runtime-identity-positive-v3 8192 \
     "${POSITIVE_KEYS[@]}" || return
-  assert_key_order "${stale_snapshot}" flare-platform-runtime-identity-stale-v1 8192 \
+  assert_key_order "${stale_snapshot}" flare-platform-runtime-identity-stale-v2 8192 \
     "${STALE_KEYS[@]}" || return
   assert_key_order "${negative_snapshot}" flare-platform-runtime-identity-negative-v1 1024 \
     "${NEGATIVE_KEYS[@]}" || return
@@ -333,38 +362,127 @@ publish_aggregate() (
   assert_stale_semantics "${stale_snapshot}" || return
   assert_negative_semantics "${negative_snapshot}" || return
   target="$(prepare_state_file 'runtime-identity/evidence.env')" || return
-  temporary="$(mktemp "${PLATFORM_STATE_DIR}/runtime-identity/.evidence.XXXXXXXX")" || return
+  temporary="$(run_host_command mktemp \
+    "${PLATFORM_STATE_DIR}/runtime-identity/.evidence.XXXXXXXX")" || return
   if ! render_aggregate "${positive_snapshot}" "${stale_snapshot}" "${negative_snapshot}" \
     "${final_state}" "${repeated_state}" >"${temporary}"; then
-    rm -f -- "${temporary}" || return
+    run_host_command rm -f -- "${temporary}" || return
     return 1
   fi
-  bytes="$(wc -c <"${temporary}")" || {
-    rm -f -- "${temporary}" || return
+  bytes="$(run_host_command wc -c <"${temporary}")" || {
+    run_host_command rm -f -- "${temporary}" || return
     return 1
   }
-  if ((bytes > 32768)) || ! bash -n "${temporary}"; then
-    rm -f -- "${temporary}" || return
+  if ((bytes > 32768)) || ! run_host_command bash -p -n "${temporary}"; then
+    run_host_command rm -f -- "${temporary}" || return
     evidence_failure 'aggregate runtime evidence is unsafe or oversized' || return
   fi
   assert_source_matches_snapshot "${positive}" "${positive_snapshot}" || return
   assert_source_matches_snapshot "${stale}" "${stale_snapshot}" || return
   assert_source_matches_snapshot "${negative}" "${negative_snapshot}" || return
   prepared="$(prepare_state_file 'runtime-identity/evidence.env')" || {
-    rm -f -- "${temporary}" || return
+    run_host_command rm -f -- "${temporary}" || return
     return 1
   }
-  if [[ "${prepared}" != "${target}" ]] || ! mv -fT -- "${temporary}" "${target}"; then
-    rm -f -- "${temporary}" || return
+  if [[ "${prepared}" != "${target}" ]] ||
+    ! run_host_command mv -fT -- "${temporary}" "${target}"; then
+    run_host_command rm -f -- "${temporary}" || return
     evidence_failure 'unable to publish aggregate runtime evidence atomically' || return
   fi
   temporary=""
   printf 'PASS  runtime-proof aggregate_evidence=%s bytes=%s\n' "${target}" "${bytes}"
 )
 
+write_schema_fixture() {
+  local file="$1" schema="$2" cleanup="$3" key
+  shift 3
+  : >"${file}"
+  for key in "$@"; do
+    case "${key}" in
+      SCHEMA) printf 'SCHEMA=%s\n' "${schema}" ;;
+      PORT_FORWARD_CLEANUP)
+        printf 'PORT_FORWARD_CLEANUP=%s\n' "${cleanup}"
+        ;;
+      *) printf '%s=fixture\n' "${key}" ;;
+    esac
+  done >>"${file}"
+}
+
+expect_runtime_proof_failure() {
+  local label="$1" expected="$2" output status=0
+  shift 2
+  output="$("$@" 2>&1)" || status=$?
+  if [[ "${status}" -ne 1 || "${output}" != "${expected}" ]]; then
+    printf 'FAIL  runtime-proof %s status=%s output=%q\n' \
+      "${label}" "${status}" "${output}" >&2
+    return 1
+  fi
+}
+
+prove_schema_transition() (
+  local directory positive stale negative aggregate expected_lines
+  local schema_failure
+  local cleanup_failure
+  schema_failure='FAIL  runtime-proof journey evidence schema or shell encoding is invalid'
+  cleanup_failure='FAIL  runtime-proof journey evidence uses obsolete process-group cleanup semantics'
+  reset_state_directory runtime-schema-proof || return
+  directory="${PLATFORM_STATE_DIR}/runtime-schema-proof"
+  positive="${directory}/positive.env"
+  stale="${directory}/stale.env"
+  negative="${directory}/negative.env"
+  aggregate="${directory}/aggregate.env"
+  builtin trap 'run_host_command rm -rf -- "${directory}"' EXIT
+
+  write_schema_fixture "${positive}" flare-platform-runtime-identity-positive-v2 \
+    no-live-members "${POSITIVE_KEYS[@]}"
+  expect_runtime_proof_failure old-positive-schema "${schema_failure}" \
+    assert_key_order \
+    "${positive}" flare-platform-runtime-identity-positive-v3 8192 \
+    "${POSITIVE_KEYS[@]}"
+
+  write_schema_fixture "${positive}" flare-platform-runtime-identity-positive-v3 \
+    absent "${POSITIVE_KEYS[@]}"
+  assert_key_order "${positive}" flare-platform-runtime-identity-positive-v3 8192 \
+    "${POSITIVE_KEYS[@]}"
+  expect_runtime_proof_failure obsolete-cleanup-value "${cleanup_failure}" \
+    assert_cleanup_semantics "${positive}"
+
+  write_schema_fixture "${positive}" flare-platform-runtime-identity-positive-v3 \
+    no-live-members "${POSITIVE_KEYS[@]}"
+  write_schema_fixture "${stale}" flare-platform-runtime-identity-stale-v1 \
+    no-live-members "${STALE_KEYS[@]}"
+  expect_runtime_proof_failure mixed-stale-schema "${schema_failure}" \
+    assert_key_order "${stale}" flare-platform-runtime-identity-stale-v2 8192 \
+    "${STALE_KEYS[@]}"
+
+  write_schema_fixture "${stale}" flare-platform-runtime-identity-stale-v2 \
+    no-live-members "${STALE_KEYS[@]}"
+  write_schema_fixture "${negative}" flare-platform-runtime-identity-negative-v1 \
+    ignored "${NEGATIVE_KEYS[@]}"
+  render_aggregate \
+    "${positive}" "${stale}" "${negative}" absent absent >"${aggregate}"
+  expected_lines=$((\
+    6 + ${#POSITIVE_KEYS[@]} + ${#STALE_KEYS[@]} + ${#NEGATIVE_KEYS[@]}))
+  [[ "${expected_lines}" -eq 74 ]] || return 1
+  [[ "$(run_host_command wc -l <"${aggregate}")" -eq "${expected_lines}" ]] ||
+    return 1
+  run_host_command grep -Fqx \
+    'SCHEMA=flare-platform-runtime-identity-evidence-v3' "${aggregate}"
+  run_host_command grep -Fqx \
+    'POSITIVE_SCHEMA=flare-platform-runtime-identity-positive-v3' "${aggregate}"
+  run_host_command grep -Fqx \
+    'STALE_SCHEMA=flare-platform-runtime-identity-stale-v2' "${aggregate}"
+  printf 'PASS  runtime-proof v3/v2 schema transition rejects mixed cleanup semantics\n'
+)
+
 main() {
+  if [[ $# -eq 1 && "$1" == --self-check ]]; then
+    prove_schema_transition
+    return
+  fi
   if [[ $# -ne 2 || "$1" != absent || "$2" != absent ]]; then
-    evidence_failure 'usage: publish-runtime-evidence.sh absent absent' || return
+    evidence_failure \
+      'usage: publish-runtime-evidence.sh [--self-check|absent absent]' || return
   fi
   publish_aggregate "$1" "$2"
 }

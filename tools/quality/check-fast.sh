@@ -1,12 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/env.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/../common/tooling.sh"
+CHECK_FAST_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
+[[ "${CHECK_FAST_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
+  CHECK_FAST_SOURCE_DIR=.
+builtin source "${CHECK_FAST_SOURCE_DIR}/../common/env.sh"
+builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+unset CHECK_FAST_SOURCE_DIR
 
 collect_shell_files() {
-  git ls-files --cached --others --exclude-standard '*.sh' |
-    grep -v '^tests/fixtures/' || true
+  run_host_command git ls-files --cached --others --exclude-standard '*.sh' |
+    run_host_command grep -v '^tests/fixtures/' || true
 }
 
 check_go_tools() {
@@ -30,8 +34,8 @@ check_gofmt() {
   local output
   local -a go_files=()
   mapfile -t go_files < <(
-    git ls-files --cached --others --exclude-standard '*.go' |
-      grep -v '^tests/fixtures/' || true
+    run_host_command git ls-files --cached --others --exclude-standard '*.go' |
+      run_host_command grep -v '^tests/fixtures/' || true
   )
   ((${#go_files[@]})) || return 0
   output="$(run_managed_tool gofmt -d "${go_files[@]}")"
