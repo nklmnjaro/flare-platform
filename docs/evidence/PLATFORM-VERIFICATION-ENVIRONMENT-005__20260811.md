@@ -2,7 +2,16 @@
 
 Date: 2026-08-11
 
-Status: `CANDIDATE OBSERVED; FINAL CLEAN REPLAY PENDING`
+Status: `HISTORICAL; ACCEPTANCE REVOKED; SUPERSEDED BY CLOSURE-006`
+
+This file preserves the writer observations and exact values recorded for the
+005 candidate. They are not current acceptance evidence and must not be updated
+with Closure-006 output. Independent review later reproduced four material
+gaps: project-generated state could impersonate host commands, normal Aqua
+execution was not sealed against inherited controls or lazy installation,
+remote Docker/BuildKit selection was accepted, and the environment proof was
+not deterministic in a pristine clone. Current candidate work is tracked in
+`PLATFORM-EXECUTION-TRUST-AND-LOCAL-DAEMON-CLOSURE-006__20260811.md`.
 
 ## Boundary and start gate
 
@@ -18,6 +27,11 @@ Its directly cloneable bundle has SHA-256
 `e8c10849e112d54d0358fc628efa464235f131361fa7dc262cf08a767741f9fc`.
 Queued documentation commits `6f05d9b`, `80c3dff`, and `a8b6a22` were applied
 before this Change began.
+
+The resulting verification-environment candidate was commit
+`51af7e09d975e5c50c2bcaf4c84c7027668b3d5c`, tree
+`8950676b10c21b6081914b152af7b5dabbba6cc2`. Closure-006 starts from that exact
+history; it does not retroactively validate the observations below.
 
 ## Observed verification host
 
@@ -66,7 +80,7 @@ Inherited `BASH_ENV`, `ENV`, `GIT_DIR`, `MAKEFILES`, and `TAR_OPTIONS` fixtures
 also left every outside marker absent. A hostile directory creator could not
 replace the owned-workspace marker with a symlink or overwrite its target.
 
-An independent observation also ran the following normalized command, where
+The 005 writer also reported the following normalized `bwrap` invocation, where
 `<REPO>` was the candidate checkout:
 
 ```bash
@@ -75,10 +89,10 @@ bwrap --ro-bind / / --tmpfs /tmp --dir <REPO> \
   --unshare-net --chdir <REPO> tools/bootstrap/doctor.sh --machine
 ```
 
-It exited zero with 28 stdout lines, no stderr, the expected schema first, and
-the kubectl identity last. The repository and root filesystem were read-only,
-the temporary filesystem was fresh, and the external network namespace was
-unavailable; the local Docker Unix socket remained observable.
+The handoff contained no bounded stdout/stderr transcript or checksum for this
+invocation. It is therefore retained only as a non-durable historical writer
+note, is not independently verifiable evidence, and is not part of 005 or 006
+acceptance. No current `bwrap` result is claimed.
 
 `make verify-runtime` remains the owner of deterministic stdin-tar and
 directory-context builds, the exact BuildKit result line, local image
@@ -138,9 +152,9 @@ The temporary worktree was removed after the bounded observation.
 | `make prove-local` | PASS, exit 0 |
 
 The final clean-commit canonical matrix, live `make verify-runtime`, direct
-bundle clone replay, bundle checksum, and `git fsck --full` are deliberately
-not claimed here. They must be recorded in the detached final handoff after
-those immutable identities and executions exist.
+bundle clone replay, bundle checksum, and `git fsck --full` were not claimed by
+this historical record. Later independent review revoked candidate acceptance
+before those missing proofs could establish promotion.
 
 ## External and unsupported behavior
 

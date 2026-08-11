@@ -2,8 +2,17 @@
 
 ## Prerequisites
 
-Run `make doctor`, `make bootstrap`, and the checksum-lock sequence described in
-`docs/decisions/0003-tool-bootstrap.md`. Docker must be reachable.
+Run `make doctor` and the ordinary checksum-enforced `make bootstrap`. Do not run
+`make tool-lock` during routine setup; that maintainer-only sequence is reserved
+for an intentional pinned-version change and is documented in
+`docs/runbooks/tool-updates.md`.
+
+Docker must resolve as the exact host-admitted executable and reach a Linux
+amd64 daemon through an external local Unix socket. The socket path is not
+hardcoded, so normal system, rootless, and Docker Desktop local sockets can
+satisfy the contract. Remote Docker contexts/hosts, remote Buildx/BuildKit
+controls, and ambiguous selectors are unsupported and rejected before runtime
+mutation or connection to the rejected endpoint.
 
 Canonical positive evidence requires clean Git status at its capture and
 publication checkpoints. Commit the intended fixture changes first: the
@@ -18,7 +27,15 @@ retained positive clean-status record; it does not re-read Git status later.
 make verify-runtime
 ```
 
-This creates or safely reuses only `flare-platform-dev` and runs, in order:
+At entry the command admits one local Docker target and freezes a fingerprint
+over the canonical Docker executable, canonical endpoint, and socket
+device/inode. Every Docker call uses that exact executable and endpoint with
+owned empty per-call Docker/Buildx configuration and `DOCKER_BUILDKIT=1`; kind
+receives the same frozen target. The fingerprint is invocation-scoped, not a
+persistent or cross-host daemon identity.
+
+The command then creates or safely reuses only `flare-platform-dev` and runs, in
+order:
 
 1. pure response, context, evidence, and process-cleanup RED proofs;
 2. a live stale same-tag RED that loads image A, builds but does not load B,
@@ -59,7 +76,11 @@ CRI `imageID` intentionally use different identity domains and are marked
 non-comparable. The authoritative content bridge is equality between the fresh
 host binary SHA-256 and the value computed by the running executable itself.
 The builder presents a deterministic two-file tar to `docker build` on stdin.
-The proof requires its archive hash, both tee-captured input-stream hashes, and
+The build explicitly requires `--builder default`, `--network=none`,
+`--pull=false`, `--no-cache`, and plain progress on the frozen local Docker
+endpoint. This is a daemon-default BuildKit contract, not a separately
+fingerprinted BuildKit binary/version claim. The proof requires its archive
+hash, both tee-captured input-stream hashes, and
 both exact byte counts to agree before accepting either image build. Immediately
 before kind load, the consumer requires build-source commit/tree equality with
 the positive source record, independently re-hashes the generated files against
@@ -83,6 +104,12 @@ cluster teardown also keeps `make verify-runtime` red.
 Positive and negative emergency EXIT traps remain armed until full PASS. Their
 cleanup is best effort on a failed path and is not evidence of absence; rerun the
 guarded absence checks before treating local state as clean.
+
+If admission fails with `FAIL  docker-target`, do not bypass it with raw Docker
+or kind mutation. Inspect the caller's Docker host/context and builder controls
+read-only, remove an unintended remote selection, and start a new canonical
+invocation. A fingerprint mismatch means the admitted Docker executable or Unix
+socket identity changed during the run and must not be treated as a warning.
 
 ## Incomplete kind creation
 

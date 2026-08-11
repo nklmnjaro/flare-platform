@@ -1,6 +1,6 @@
 # ADR 0003: Project-local tool bootstrap
 
-Status: trust closure implemented; independent clean replay required
+Status: Closure-006 source candidate implemented; final live and clean replay required
 
 ## Decision
 
@@ -16,12 +16,32 @@ Aqua file type, executable mode, binary digest, and exact version before it
 creates a backup, changes a tracked file, contacts the network, or executes an
 update/install operation.
 
+Normal managed-tool execution is a separate, non-installing boundary. Before
+each call it revalidates the cached Aqua binary and exact version, the pinned
+proxy digest, and the managed proxy link. It removes inherited exported
+`AQUA_*` controls and exports exactly these Aqua variables to the child:
+
+```text
+AQUA_ROOT_DIR=<project .platform/aqua>
+AQUA_CONFIG=<project aqua.yaml>
+AQUA_DISABLE_LAZY_INSTALL=true
+```
+
+The child receives the host-only PATH. A missing installed package therefore
+fails closed instead of triggering a lazy download or changing project Aqua
+state. Ordinary check, verify, hook, and identity commands are not installation
+or update boundaries.
+
 All persistent project Aqua state lives under `.platform/aqua`; no global
 package-manager changes or `sudo` operations are performed. A bounded
-environment observation may use a temporary Aqua root and must remove it
-before returning. The current implemented OS/architecture pair is Linux
-x86_64, admitted together with the exact capabilities in ADR 0006 rather than
-by OS identity alone. The repository never installs or reconfigures Docker.
+environment observation uses a temporary Aqua root for Aqua metadata,
+`list`, and `which`, while treating the admitted project registries and package
+bytes as inputs. The subsequent kind/kubectl version commands use the normal
+sealed project execution boundary with lazy installation disabled. The
+temporary root is removed before returning. The current implemented
+OS/architecture pair is Linux x86_64, admitted together with the exact
+capabilities in ADR 0006 rather than by OS identity alone. The repository never
+installs or reconfigures Docker.
 
 ## Managed command admission
 
@@ -38,11 +58,22 @@ entry whose resolved target remains below `.platform/aqua`. External PATH
 entries are not fallbacks. Aqua configuration and checksums remain the source
 of package-version truth; the admission boundary does not duplicate versions.
 
-Bash, Git, curl, tar, timeout, Docker, and the small host-utility surface remain
-host-owned. `make doctor` checks those prerequisites, including `readlink`,
-without installing or changing them. Kubernetes proof fixtures create explicit
-project-local mock entries in isolated temporary repositories; production
-admission is unchanged.
+Bash, Git, curl, tar, timeout, Docker, and the fixed small host-utility surface
+remain host-owned by enforcement, not by PATH precedence. Here host-owned means
+that the caller search path is captured before project state is published, the
+command is admitted as a canonical absolute regular executable, and both its
+lookup location and resolved target are outside the checkout and every
+`.platform` generated-state path. Shell aliases, functions, non-file command
+types, repository targets, and project-generated substitutes are rejected.
+Admitted commands are executed by their cached absolute paths, and process PATH
+contains only canonical external host directories. This is not a claim that
+every host executable is root-owned, package-manager-proven, or digest-pinned.
+
+`make doctor` behaviorally checks the exact host surface it consumes, including
+`readlink`, without installing or changing those prerequisites. Kubernetes RED
+proofs use an explicit adapter enabled only by the exact test contract and
+confined to an owned temporary fixture root; production entrypoints cannot
+select it.
 
 ## Checksum admission
 
@@ -84,23 +115,33 @@ and in a clean replacement-worker clone of
 `42e877c489afe8347e4f5a797d453838c95a59c0`. The clean replay acquired Aqua and
 all locked tools from empty project-local state before running the gates.
 
-Those statements describe the historical replay. Independent review of
-`f2107559f3acad5cc5468b9e30e537c84add2c20` later revoked present promotion
-because `tool-lock` and managed-command admission did not yet share these trust
-boundaries. Promotion remains unclaimed until the closure receives a new plain
-clone replay and independent acceptance.
+Those statements describe historical replay only. Independent review of
+`f2107559f3acad5cc5468b9e30e537c84add2c20` revoked promotion because
+`tool-lock` and managed-command admission did not yet share the required trust
+boundaries. The later verification-environment candidate
+`51af7e09d975e5c50c2bcaf4c84c7027668b3d5c` was also rejected because
+host-command admission, normal Aqua execution, local Docker selection, and the
+pristine environment proof remained incomplete. Closure-006 continues from
+that exact candidate and has an implementation snapshot at
+`cbc68e9c019f87cc2420d7c0fea97271ca234918`; final live and clean-clone replay
+remain pending, so promotion is still unclaimed.
 
 ## Host prerequisites
 
 `make doctor` verifies the bounded host capabilities used by the canonical
-scripts, Docker reachability for the normal path, and project bootstrap state
-as separate results. It remains non-destructive. Tool versions used by static
-checks and kind are installed project-locally by Aqua. See ADR 0006 for the
-environment profile and the boundary between doctor and runtime proof.
+scripts, admission of one external local Unix Docker target, read-only daemon
+reachability, and project bootstrap state as separate results. It remains
+non-destructive with respect to repository, image, and cluster state; owned
+temporary scratch is removed before return. Tool versions used by static checks
+and kind are installed project-locally only by explicit bootstrap. See ADR 0006
+for the environment profile and the boundary between observation and runtime
+mutation proof.
 
 ## Network contract
 
 The first bootstrap requires outbound HTTPS to fetch pinned assets. Static
 schema/security tools may populate caches below `.platform/`. The Kubernetes
 smoke image is built locally and loaded directly into kind; it is not pushed to
-or pulled from an external registry.
+or pulled from an external registry. Normal managed execution has Aqua lazy
+installation disabled; only bootstrap and the maintainer-only tool-lock
+workflow may acquire or update managed tool bytes.
