@@ -273,6 +273,12 @@ prove_host_utility_pipeline_red() {
       "${reason}" environment_profile_check_host_utilities
   done
   environment_profile_require_host_commands
+  # shellcheck disable=SC2154
+  ENVIRONMENT_PROFILE_HOST_PATHS[flock]="${fake}"
+  TMPDIR="${WORK_DIR}" expect_profile_red host-zero-flock \
+    'bounded flock descriptor semantics are unavailable' \
+    environment_profile_check_host_utilities
+  environment_profile_require_host_commands
   TMPDIR="${WORK_DIR}" environment_profile_check_host_utilities
   expect_profile_red host-zero-uname 'requires Linux x86_64; observed  ' \
     environment_profile_check_platform "${fake}"
@@ -292,6 +298,283 @@ prove_host_utility_pipeline_red() {
     "${ENVIRONMENT_PROFILE_HOST_PATHS[bash]}"
   printf 'PASS  environment-red every declared host utility is behavioral\n'
 }
+
+prove_flock_function_shadow_rejected() {
+  local marker="${WORK_DIR}/shadowed-flock.marker"
+  local output="${WORK_DIR}/shadowed-flock.out" status=0
+  (
+    # The function is deliberately present before the host boundary is loaded.
+    # shellcheck disable=SC2317,SC2329
+    flock() { builtin printf 'executed\n' >"${marker}"; }
+    builtin source "${PLATFORM_ROOT}/tools/common/env.sh"
+    run_host_command flock --version
+  ) >"${output}" 2>&1 || status=$?
+  [[ "${status}" -eq "${HOST_COMMAND_UNTRUSTED_STATUS}" ]]
+  run_host_command grep -Fqx \
+    'FAIL  host-command  flock: shadowed by shell function' "${output}"
+  [[ ! -e "${marker}" && ! -L "${marker}" ]]
+  printf 'PASS  host-red      caller flock function rejected with exact 69\n'
+}
+
+prove_lifecycle_state_flock_rejected() (
+  local target="${WORK_DIR}/lease-host-current"
+  local digest root owner_token owner_file lock_file owned=false
+  local root_identity root_inode_identity owner_identity fake_identity
+  local lock_identity alias_identity pinned_identity canonical entries
+  local replacement_root_identity replacement_owner_identity
+  local replacement_sentinel_identity saved_root_identity
+  local replacement_owner replacement_sentinel saved_root replacement_saved
+  local pinned_root alias_retired fake_retired owner_retired
+  local root_directory_fd='' root_lock_fd='' cleanup_status=0
+  local alias="/tmp/flare-platform-lease-alias-${BASHPID}"
+  local scope fake lookup marker output status
+
+  lifecycle_fixture_identity() {
+    run_host_command stat -Lc '%d:%i:%u:%a:%h:%s' -- "$1"
+  }
+  lifecycle_fixture_inode_identity() {
+    run_host_command stat -Lc '%d:%i:%u' -- "$1"
+  }
+  lifecycle_fixture_symlink_identity() {
+    run_host_command stat -c '%d:%i:%u:%a:%h:%s' -- "$1"
+  }
+  close_lifecycle_fixture_descriptors() {
+    if [[ "${root_lock_fd}" =~ ^[0-9]{1,4}$ ]]; then
+      { exec {root_lock_fd}>&-; } 2>/dev/null || true
+    fi
+    if [[ "${root_directory_fd}" =~ ^[0-9]{1,4}$ ]]; then
+      { exec {root_directory_fd}<&-; } 2>/dev/null || true
+    fi
+    root_lock_fd=''
+    root_directory_fd=''
+  }
+  validate_persistent_lifecycle_root() {
+    local candidate="$1" expected_inode="$2" expected_lock="$3"
+    local candidate_entries candidate_canonical validation_status=0
+    [[ "${candidate}" =~ ^/tmp/flare-platform-lifecycle-lease-[0-9a-f]{64}$ &&
+      -d "${candidate}" && ! -L "${candidate}" &&
+      -f "${candidate}/lock" && ! -L "${candidate}/lock" ]] || return 1
+    [[ "$(lifecycle_fixture_inode_identity "${candidate}")" == "${expected_inode}" &&
+    "$(run_host_command stat -Lc '%u:%a:%h' -- "${candidate}")" == "${EUID}:700:2" &&
+    "$(lifecycle_fixture_identity "${candidate}/lock")" == "${expected_lock}" ]] || return 1
+    candidate_canonical="$(run_host_command readlink -f -- "${candidate}")" ||
+      return
+    [[ "${candidate_canonical}" == "${candidate}" ]] || return 1
+    candidate_entries="$(run_host_command find -H "${candidate}" -mindepth 1 \
+      -maxdepth 1 -printf '%f\n' | run_host_command sort)" || return
+    [[ "${candidate_entries}" == lock ]] || return 1
+    exec {root_directory_fd}<"${candidate}" || return
+    pinned_root="/proc/self/fd/${root_directory_fd}"
+    [[ "$(lifecycle_fixture_inode_identity "${pinned_root}")" == "${expected_inode}" ]] || validation_status=1
+    if ((validation_status == 0)); then
+      exec {root_lock_fd}<>"${pinned_root}/lock" || validation_status=1
+    fi
+    if ((validation_status == 0)); then
+      run_host_command flock --exclusive --nonblock "${root_lock_fd}" ||
+        validation_status=1
+    fi
+    if ((validation_status == 0)); then
+      [[ "$(lifecycle_fixture_identity "${pinned_root}/lock")" == "${expected_lock}" &&
+      "$(lifecycle_fixture_inode_identity "${candidate}")" == "${expected_inode}" ]] || validation_status=1
+    fi
+    close_lifecycle_fixture_descriptors
+    ((validation_status == 0))
+  }
+  cleanup_lifecycle_host_fixture() {
+    [[ "${owned}" == true ]] || return 0
+    [[ "${root}" =~ ^/tmp/flare-platform-lifecycle-lease-[0-9a-f]{64}$ &&
+      -d "${root}" && ! -L "${root}" && -L "${alias}" &&
+      -f "${owner_file}" && ! -L "${owner_file}" &&
+      -f "${lock_file}" && ! -L "${lock_file}" &&
+      -f "${fake}" && ! -L "${fake}" ]] || return 1
+    [[ "$(lifecycle_fixture_identity "${root}")" == "${root_identity}" &&
+    "$(lifecycle_fixture_inode_identity "${root}")" == "${root_inode_identity}" &&
+    "$(lifecycle_fixture_identity "${owner_file}")" == "${owner_identity}" &&
+    "$(lifecycle_fixture_identity "${lock_file}")" == "${lock_identity}" &&
+    "$(lifecycle_fixture_identity "${fake}")" == "${fake_identity}" &&
+    "$(lifecycle_fixture_symlink_identity "${alias}")" == "${alias_identity}" &&
+    "$(<"${owner_file}")" == "${owner_token}" &&
+    "$(run_host_command readlink -- "${alias}")" == "${root}" ]] ||
+      return 1
+    canonical="$(run_host_command readlink -f -- "${root}")" || return
+    [[ "${canonical}" == "${root}" ]] || return 1
+
+    exec {root_directory_fd}<"${root}" || return
+    pinned_root="/proc/self/fd/${root_directory_fd}"
+    pinned_identity="$(lifecycle_fixture_inode_identity "${pinned_root}")" || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+    [[ "${pinned_identity}" == "${root_inode_identity}" ]] || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+    exec {root_lock_fd}<>"${pinned_root}/lock" || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+    if ! run_host_command flock --exclusive --nonblock "${root_lock_fd}"; then
+      close_lifecycle_fixture_descriptors
+      return 1
+    fi
+    [[ "$(lifecycle_fixture_inode_identity "${root}")" == "${root_inode_identity}" &&
+    "$(lifecycle_fixture_identity "${pinned_root}/lock")" == "${lock_identity}" &&
+    "$(lifecycle_fixture_identity "${pinned_root}/.proof-owner")" == "${owner_identity}" &&
+    "$(lifecycle_fixture_identity "${pinned_root}/flock")" == "${fake_identity}" ]] || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+    entries="$(run_host_command find -H "${pinned_root}" -mindepth 1 \
+      -maxdepth 1 -printf '%f\n' | run_host_command sort)" || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+    [[ "${entries}" == $'.proof-owner\nflock\nlock' ]] || {
+      close_lifecycle_fixture_descriptors
+      return 1
+    }
+
+    cleanup_status=0
+    run_host_command mv -T -- "${alias}" "${alias_retired}" || cleanup_status=$?
+    ((cleanup_status != 0)) ||
+      run_host_command mv -T -- "${pinned_root}/flock" "${fake_retired}" ||
+      cleanup_status=$?
+    ((cleanup_status != 0)) ||
+      run_host_command mv -T -- "${pinned_root}/.proof-owner" \
+        "${owner_retired}" || cleanup_status=$?
+    if ((cleanup_status == 0)); then
+      [[ "$(lifecycle_fixture_symlink_identity "${alias_retired}")" == "${alias_identity}" &&
+      "$(lifecycle_fixture_identity "${fake_retired}")" == "${fake_identity}" &&
+      "$(lifecycle_fixture_identity "${owner_retired}")" == "${owner_identity}" ]] || cleanup_status=1
+    fi
+    if ((cleanup_status == 0)); then
+      entries="$(run_host_command find -H "${pinned_root}" -mindepth 1 \
+        -maxdepth 1 -printf '%f\n')" || cleanup_status=1
+      [[ "${entries}" == lock ]] || cleanup_status=1
+    fi
+    close_lifecycle_fixture_descriptors
+    ((cleanup_status == 0)) || return "${cleanup_status}"
+    validate_persistent_lifecycle_root \
+      "${root}" "${root_inode_identity}" "${lock_identity}" || return
+    owned=false
+  }
+  trap cleanup_lifecycle_host_fixture EXIT
+  prepare_doctor_fixture "${target}"
+  digest="$({
+    builtin printf 'flare-platform-host-path-proof-v2\0%s\0%s\0' \
+      "${PLATFORM_ROOT}" "${EUID}" | run_host_command sha256sum --
+  })" || return
+  [[ "${digest}" =~ ^([0-9a-f]{64})\ \ -$ ]] || return 1
+  root="/tmp/flare-platform-lifecycle-lease-${BASH_REMATCH[1]}"
+  owner_token="proof-${BASH_REMATCH[1]}"
+  owner_file="${root}/.proof-owner"
+  lock_file="${root}/lock"
+  fake="${root}/flock"
+  saved_root="${WORK_DIR}/lease-host-original"
+  replacement_saved="${WORK_DIR}/lease-host-replacement"
+  alias_retired="${WORK_DIR}/lease-host-alias.retired"
+  fake_retired="${WORK_DIR}/lease-host-flock.retired"
+  owner_retired="${WORK_DIR}/lease-host-owner.retired"
+  [[ ! -e "${alias}" && ! -L "${alias}" && ! -e "${saved_root}" &&
+    ! -L "${saved_root}" && ! -e "${replacement_saved}" &&
+    ! -L "${replacement_saved}" && ! -e "${alias_retired}" &&
+    ! -L "${alias_retired}" && ! -e "${fake_retired}" &&
+    ! -L "${fake_retired}" && ! -e "${owner_retired}" &&
+    ! -L "${owner_retired}" ]] ||
+    return 1
+  if [[ ! -e "${root}" && ! -L "${root}" ]]; then
+    (umask 077 && run_host_command mkdir -- "${root}") || return
+    (umask 077 && : >"${lock_file}")
+  fi
+  [[ -d "${root}" && ! -L "${root}" && -f "${lock_file}" &&
+    ! -L "${lock_file}" ]] || return 1
+  root_inode_identity="$(lifecycle_fixture_inode_identity "${root}")"
+  lock_identity="$(lifecycle_fixture_identity "${lock_file}")"
+  [[ "${lock_identity}" == *":${EUID}:600:1:0" ]]
+  validate_persistent_lifecycle_root \
+    "${root}" "${root_inode_identity}" "${lock_identity}"
+  (umask 077 && printf '%s\n' "${owner_token}" >"${owner_file}")
+  run_host_command cat >"${fake}" <<'FAKE'
+#!/bin/bash -p
+builtin printf 'executed\n' >"${LEASE_FLOCK_MARKER:?}"
+exit 0
+FAKE
+  run_host_command chmod 0755 "${fake}"
+  run_host_command ln -s -- "${root}" "${alias}"
+  root_identity="$(lifecycle_fixture_identity "${root}")"
+  owner_identity="$(lifecycle_fixture_identity "${owner_file}")"
+  fake_identity="$(lifecycle_fixture_identity "${fake}")"
+  alias_identity="$(lifecycle_fixture_symlink_identity "${alias}")"
+  [[ "${root_identity}" == *":${EUID}:700:2:"* &&
+    "${owner_identity}" == *":${EUID}:600:1:"* &&
+    "${fake_identity}" == *":${EUID}:755:1:"* &&
+    "${alias_identity}" == *":${EUID}:777:1:"* ]] || return 1
+  owned=true
+  for scope in direct symlink-alias; do
+    if [[ "${scope}" == direct ]]; then
+      lookup="${root}"
+    else
+      lookup="${alias}"
+    fi
+    marker="${WORK_DIR}/lease-host-${scope}.marker"
+    output="${WORK_DIR}/lease-host-${scope}.out"
+    status=0
+    run_host_command env PATH="${lookup}:${PLATFORM_CALLER_HOST_PATH}" \
+      PLATFORM_DOCKER_TEST_CONTRACT="${DOCKER_TEST_CONTRACT}" \
+      PLATFORM_DOCKER_TEST_ROOT="${target}/.platform-test/docker-target" \
+      PLATFORM_DOCKER_TEST_TOKEN="${DOCKER_TEST_TOKEN}" \
+      LEASE_FLOCK_MARKER="${marker}" \
+      "${target}/tools/bootstrap/doctor.sh" --base-only \
+      >"${output}" 2>&1 || status=$?
+    [[ "${status}" -eq "${HOST_COMMAND_UNTRUSTED_STATUS}" ]]
+    if [[ "${scope}" == direct ]]; then
+      run_host_command grep -Fqx \
+        'FAIL  host-command  flock: lookup location is inside repository or generated command state' \
+        "${output}"
+    else
+      run_host_command grep -Fqx \
+        'FAIL  host-command  flock: physical lookup location is inside repository or generated command state' \
+        "${output}"
+    fi
+    [[ ! -e "${marker}" && ! -L "${marker}" ]]
+  done
+
+  run_host_command mv -- "${root}" "${saved_root}"
+  saved_root_identity="$(lifecycle_fixture_identity "${saved_root}")"
+  [[ "${saved_root_identity}" == "${root_identity}" ]]
+  (umask 077 && run_host_command mkdir -- "${root}")
+  replacement_owner="${root}/.proof-owner"
+  replacement_sentinel="${root}/replacement-sentinel"
+  (umask 077 && printf '%s\n' "${owner_token}" >"${replacement_owner}")
+  (umask 077 && printf 'preserve\n' >"${replacement_sentinel}")
+  replacement_root_identity="$(lifecycle_fixture_identity "${root}")"
+  replacement_owner_identity="$(lifecycle_fixture_identity \
+    "${replacement_owner}")"
+  replacement_sentinel_identity="$(lifecycle_fixture_identity \
+    "${replacement_sentinel}")"
+  status=0
+  cleanup_lifecycle_host_fixture || status=$?
+  [[ "${status}" -ne 0 && "$({ lifecycle_fixture_identity "${root}"; })" == "${replacement_root_identity}" &&
+  "$({ lifecycle_fixture_identity "${replacement_owner}"; })" == "${replacement_owner_identity}" &&
+  "$({ lifecycle_fixture_identity "${replacement_sentinel}"; })" == "${replacement_sentinel_identity}" &&
+  "$(<"${replacement_owner}")" == "${owner_token}" &&
+  "$(<"${replacement_sentinel}")" == preserve ]]
+  entries="$(run_host_command find -H "${root}" -mindepth 1 -maxdepth 1 \
+    -printf '%f\n' | run_host_command sort)"
+  [[ "${entries}" == $'.proof-owner\nreplacement-sentinel' ]]
+  run_host_command mv -T -- "${root}" "${replacement_saved}"
+  [[ "$(lifecycle_fixture_identity "${replacement_saved}")" == "${replacement_root_identity}" &&
+  "$(lifecycle_fixture_identity "${replacement_saved}/.proof-owner")" == "${replacement_owner_identity}" &&
+  "$(lifecycle_fixture_identity \
+    "${replacement_saved}/replacement-sentinel")" == "${replacement_sentinel_identity}" ]]
+  run_host_command mv -- "${saved_root}" "${root}"
+  [[ "$(lifecycle_fixture_identity "${root}")" == "${root_identity}" ]]
+  trap - EXIT
+  cleanup_lifecycle_host_fixture
+  validate_persistent_lifecycle_root \
+    "${root}" "${root_inode_identity}" "${lock_identity}"
+  printf 'PASS  host-red      shared-lease flock fakes rejected; replacement preserved; root lock-only\n'
+)
 
 prove_mktemp_cannot_select_cleanup_target() {
   local -a actual=("$@") probe
@@ -1262,6 +1545,8 @@ main() {
   prove_curl_surface_red
   prove_core_utility_red
   prove_host_utility_pipeline_red
+  prove_flock_function_shadow_rejected
+  prove_lifecycle_state_flock_rejected
   prove_tar_and_timeout_red
   prove_proc_red
   prove_docker_identity_red

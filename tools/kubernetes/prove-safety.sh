@@ -25,10 +25,17 @@ unset DOCKER_PROBE_DISCOVERY_LOG DOCKER_PROBE_LOCAL_SOCKET
 unset DOCKER_PROBE_MUTATION_MARKER DOCKER_PROBE_PRINT_TARGET
 unset ADAPTER_PROBE_MODE FIXTURE_ASSERT_DOCKER_LOOKUP
 unset FIXTURE_CLUSTER_STATE FIXTURE_CLUSTER_STATE_FILE
+unset FIXTURE_KIND_CREATE_READY FIXTURE_KIND_CREATE_RELEASE
 unset FIXTURE_DELETED_MARKER FIXTURE_DOCKER_ENV_LOG
 unset FIXTURE_KIND_CREATE_STATUS FIXTURE_KIND_LOG
 unset FIXTURE_NAMESPACE_QUERY_FAIL FIXTURE_NAMESPACE_STATE
 unset FIXTURE_NODE_WAIT_STATUS
+unset FIXTURE_CHECKOUT_ID FIXTURE_KUBECTL_LOG
+unset FIXTURE_NAMESPACE_DELETE_MARKER FIXTURE_NOISY_RESPONSES
+unset FIXTURE_OWNERSHIP_CLUSTER_NAME FIXTURE_OWNERSHIP_CONTRACT
+unset FIXTURE_OWNERSHIP_CREATE_ARGS FIXTURE_OWNERSHIP_MODE
+unset FIXTURE_OWNERSHIP_OWNER FIXTURE_OWNERSHIP_RESOURCE_VERSION
+unset FIXTURE_OWNERSHIP_UID FIXTURE_SNAPSHOT_COUNT_FILE
 
 copy_runtime_files() {
   local target="$1"
@@ -47,6 +54,13 @@ copy_runtime_files() {
     "${target}/tools/common/state.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/common/process-state.sh" \
     "${target}/tools/common/process-state.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/checkout-identity.sh" \
+    "${target}/tools/common/checkout-identity.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/lifecycle-lease.sh" \
+    "${target}/tools/common/lifecycle-lease.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/common/clean.sh" \
+    "${target}/tools/common/clean.sh"
+  run_host_command chmod 0755 "${target}/tools/common/clean.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/common/evidence-capture.sh" \
     "${target}/tools/common/evidence-capture.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
@@ -57,7 +71,8 @@ copy_runtime_files() {
     "${target}/tools/common/docker-target-production.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/docker-target-fixture.sh" \
     "${target}/tools/common/docker-target.sh"
-  for script in runtime guard-context guard-ownership kind-up kind-down delete-namespace diagnostics; do
+  for script in runtime ownership guard-context guard-ownership kind-up kind-down \
+    delete-namespace diagnostics; do
     run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/${script}.sh" \
       "${target}/tools/kubernetes/${script}.sh"
   done
@@ -81,6 +96,13 @@ run_runtime_fixture() (
   "$@"
 )
 
+checkout_id_for_target() (
+  local target="$1"
+  builtin cd -P -- "${target}" || return
+  builtin source tools/kubernetes/ownership.sh
+  platform_checkout_identity
+)
+
 publish_managed_mock() {
   local target="$1" command_name="$2"
   run_host_command chmod 0755 \
@@ -92,13 +114,12 @@ write_kind_mock() {
   run_host_command cat >"${target}/.platform/aqua/test-fixtures/kind" <<'MOCK'
 #!/bin/bash -p
 set -euo pipefail
-[[ "${HOME:?}" == /nonexistent ]]
-[[ "${DOCKER_CONFIG:?}" == /tmp/flare-platform-docker-child.*/docker ]]
+[[ "${HOME:?}" == /nonexistent &&
+  "${DOCKER_CONFIG:?}" == /tmp/flare-platform-docker-child.*/docker ]]
 [[ "${BUILDX_CONFIG:?}" == /tmp/flare-platform-docker-child.*/buildx ]]
 [[ -d "${DOCKER_CONFIG}" && -d "${BUILDX_CONFIG}" ]]
 for control in KIND_EXPERIMENTAL_PROVIDER KIND_EXPERIMENTAL_DOCKER_NETWORK \
-  KIND_EXPERIMENTAL_PODMAN_NETWORK KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER \
-  KIND_CLUSTER_NAME KIND_DNS_SEARCH; do
+  KIND_EXPERIMENTAL_PODMAN_NETWORK KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER KIND_CLUSTER_NAME KIND_DNS_SEARCH; do
   [[ ! -v "${control}" ]]
 done
 [[ -z "${FIXTURE_KIND_LOG:-}" ]] || printf '%s\n' "$*" >>"${FIXTURE_KIND_LOG}"
@@ -112,11 +133,9 @@ fi
 if [[ "${FIXTURE_ASSERT_DOCKER_LOOKUP:-false}" == true ]]; then
   docker_lookup="$(builtin type -P docker)"
   [[ "${docker_lookup}" == "${DOCKER_TARGET_DOCKER_PATH:?}" ]]
-  printf 'kind-docker-lookup|%s\n' "${docker_lookup}" \
-    >>"${FIXTURE_DOCKER_ENV_LOG:?}"
+  printf 'kind-docker-lookup|%s\n' "${docker_lookup}" >>"${FIXTURE_DOCKER_ENV_LOG:?}"
   docker version --format \
-    '{{.Client.Version}}|{{.Server.Version}}|{{.Server.Os}}|{{.Server.Arch}}' \
-    >/dev/null
+    '{{.Client.Version}}|{{.Server.Version}}|{{.Server.Os}}|{{.Server.Arch}}' >/dev/null
 fi
 cluster_state() {
   if [[ -n "${FIXTURE_CLUSTER_STATE_FILE:-}" ]]; then
@@ -128,9 +147,7 @@ cluster_state() {
 }
 case "${1:-} ${2:-}" in
   "get clusters")
-    if [[ "$(cluster_state)" == present ]]; then
-      printf 'flare-platform-dev\n'
-    fi
+    [[ "$(cluster_state)" != present ]] || printf 'flare-platform-dev\n'
     ;;
   "export kubeconfig")
     while (($#)); do
@@ -144,6 +161,11 @@ case "${1:-} ${2:-}" in
     exit 2
     ;;
   "create cluster")
+    if [[ -n "${FIXTURE_KIND_CREATE_READY:-}" &&
+      -n "${FIXTURE_KIND_CREATE_RELEASE:-}" ]]; then
+      printf 'ready\n' >"${FIXTURE_KIND_CREATE_READY}"
+      while [[ ! -s "${FIXTURE_KIND_CREATE_RELEASE}" ]]; do sleep 0.02; done
+    fi
     while (($#)); do
       if [[ "$1" == --kubeconfig ]]; then
         shift
@@ -166,6 +188,14 @@ case "${1:-} ${2:-}" in
 esac
 MOCK
   publish_managed_mock "${target}" kind
+}
+
+write_kubectl_mock() {
+  local target="$1"
+  run_host_command cp \
+    "${PLATFORM_ROOT}/tests/fixtures/kubernetes/ownership-kubectl.sh" \
+    "${target}/.platform/aqua/test-fixtures/kubectl"
+  publish_managed_mock "${target}" kubectl
 }
 
 write_docker_mock() {
@@ -696,51 +726,12 @@ prove_docker_adapter_reds() {
 
 write_ownership_kubectl_mock() {
   local target="$1"
-  run_host_command cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
-#!/bin/bash -p
-set -euo pipefail
-arguments="$*"
-if [[ "${arguments}" == *"config current-context"* ]]; then
-  printf 'kind-flare-platform-dev\n'
-elif [[ "${arguments}" == *"jsonpath={.data.owner}"* ]]; then
-  printf 'not-flare\n'
-elif [[ "${arguments}" == *"jsonpath={.data.cluster-name}"* ]]; then
-  printf 'flare-platform-dev\n'
-else
-  exit 2
-fi
-MOCK
-  publish_managed_mock "${target}" kubectl
+  write_kubectl_mock "${target}"
 }
 
 write_create_kubectl_mock() {
   local target="$1"
-  run_host_command cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
-#!/bin/bash -p
-set -euo pipefail
-if [[ -n "${FIXTURE_DOCKER_ENV_LOG:-}" ]]; then
-  printf 'kubectl|%s|%s|%s|%s|%s|%s\n' \
-    "${DOCKER_HOST-<unset>}" "${DOCKER_CONTEXT-<unset>}" \
-    "${BUILDX_BUILDER-<unset>}" "${DOCKER_BUILDKIT-<unset>}" \
-    "${DOCKER_TARGET_DOCKER_PATH-<unset>}" \
-    "${DOCKER_TARGET_FINGERPRINT-<unset>}" >>"${FIXTURE_DOCKER_ENV_LOG}"
-fi
-arguments="$*"
-if [[ "${arguments}" == *"config current-context"* ]]; then
-  printf 'kind-flare-platform-dev\n'
-elif [[ "${arguments}" == *"jsonpath={.data.owner}"* ]]; then
-  printf 'flare-platform-infra\n'
-elif [[ "${arguments}" == *"jsonpath={.data.cluster-name}"* ]]; then
-  printf 'flare-platform-dev\n'
-elif [[ "${arguments}" == *" apply "* ]]; then
-  exit 0
-elif [[ "${arguments}" == *" wait "* ]]; then
-  exit "${FIXTURE_NODE_WAIT_STATUS:-0}"
-else
-  exit 2
-fi
-MOCK
-  publish_managed_mock "${target}" kubectl
+  write_kubectl_mock "${target}"
 }
 
 prove_post_create_failure_is_cleaned() {
@@ -749,14 +740,18 @@ prove_post_create_failure_is_cleaned() {
   local state="${target}/cluster-state"
   local docker_env_log="${target}/docker-environment.log"
   local kind_log="${target}/kind.log"
+  local ownership_args="${target}/ownership-create-args" checkout_id
   copy_runtime_files "${target}"
   write_kind_mock "${target}"
   write_docker_mock "${target}"
   write_create_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'absent\n' >"${state}"
   if FIXTURE_CLUSTER_STATE_FILE="${state}" \
     FIXTURE_DELETED_MARKER="${marker}" FIXTURE_NODE_WAIT_STATUS=7 \
     FIXTURE_DOCKER_ENV_LOG="${docker_env_log}" FIXTURE_KIND_LOG="${kind_log}" \
+    FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    FIXTURE_OWNERSHIP_CREATE_ARGS="${ownership_args}" \
     run_runtime_fixture "${target}" \
     tools/kubernetes/kind-up.sh >"${target}/kind-up.out" 2>&1; then
     printf 'FAIL  kube-red       post-create readiness failure passed\n' >&2
@@ -770,6 +765,14 @@ prove_post_create_failure_is_cleaned() {
   fi
   run_host_command grep -Fqx absent "${state}"
   [[ ! -e "${target}/.platform/kubeconfig" ]]
+  run_host_command grep -Fq -- \
+    '--from-literal=contract_version=checkout-v1' "${ownership_args}"
+  run_host_command grep -Fq -- \
+    "--from-literal=checkout_id=${checkout_id}" "${ownership_args}"
+  if run_host_command grep -Fq -- "${target}" "${ownership_args}"; then
+    printf 'FAIL  kube-red       ownership marker exposed the checkout path\n' >&2
+    return 1
+  fi
   # awk program is intentionally literal.
   # shellcheck disable=SC2016
   if ! run_host_command awk -F '|' \
@@ -810,17 +813,168 @@ prove_create_failure_stops_without_blind_delete() {
   fi
   [[ ! -e "${marker}" ]]
   run_host_command grep -Fqx present "${state}"
-  [[ ! -e "${target}/.platform/kubeconfig" ]]
-  printf 'PASS  kube-red       unowned partial creation was not blindly deleted\n'
+  [[ -f "${target}/.platform/kubeconfig" ]]
+  printf 'PASS  kube-red       unowned partial creation and kubeconfig were preserved\n'
+}
+
+prove_checkout_identity_is_stable_and_distinct() {
+  local first="${WORK_DIR}/identity-first" second="${WORK_DIR}/identity-second"
+  local alias="${WORK_DIR}/identity-alias" first_a first_b alias_id second_id
+  copy_runtime_files "${first}"
+  copy_runtime_files "${second}"
+  run_host_command ln -s -- "${first}" "${alias}"
+  first_a="$(checkout_id_for_target "${first}")" || return
+  first_b="$(checkout_id_for_target "${first}")" || return
+  alias_id="$(checkout_id_for_target "${alias}")" || return
+  second_id="$(checkout_id_for_target "${second}")" || return
+  [[ "${first_a}" =~ ^sha256:[0-9a-f]{64}$ &&
+    "${first_a}" == "${first_b}" && "${first_a}" == "${alias_id}" &&
+    "${first_a}" != "${second_id}" ]]
+  printf 'PASS  ownership     checkout identity is physical-root stable and distinct\n'
+}
+
+prove_marker_mode_is_rejected() {
+  local label="$1" mode="$2" reason="$3"
+  local target="${WORK_DIR}/marker-${label}" marker state checkout_id output status=0
+  marker="${target}/deleted" state="${target}/cluster-state"
+  copy_runtime_files "${target}"
+  write_kind_mock "${target}"
+  write_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
+  printf 'present\n' >"${state}"
+  if output="$(FIXTURE_CLUSTER_STATE_FILE="${state}" \
+    FIXTURE_DELETED_MARKER="${marker}" FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    FIXTURE_OWNERSHIP_MODE="${mode}" run_runtime_fixture "${target}" \
+    tools/kubernetes/kind-down.sh --if-present 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 || "${output}" != *"${reason}"* ]]; then
+    printf 'FAIL  kube-red       marker %s status=%s output=%q\n' \
+      "${label}" "${status}" "${output}" >&2
+    return 1
+  fi
+  [[ ! -e "${marker}" ]]
+  run_host_command grep -Fqx present "${state}"
+  printf 'PASS  kube-red       %s ownership marker rejected without mutation\n' \
+    "${label}"
+}
+
+prove_marker_grammar_reds() {
+  prove_marker_mode_is_rejected legacy legacy \
+    'ownership snapshot is malformed'
+  prove_marker_mode_is_rejected extra-key extra \
+    'ownership snapshot is malformed'
+  prove_marker_mode_is_rejected binary-data binary \
+    'ownership snapshot is malformed'
+  prove_marker_mode_is_rejected malformed malformed \
+    'ownership snapshot is malformed'
+  prove_marker_mode_is_rejected nul-byte nul \
+    'ownership snapshot contains a forbidden byte'
+  prove_marker_mode_is_rejected oversized oversized \
+    'ownership snapshot exceeds its byte boundary'
+}
+
+prove_other_checkout_cluster_is_not_deleted() {
+  local target="${WORK_DIR}/other-checkout-current"
+  local foreign="${WORK_DIR}/other-checkout-foreign"
+  local marker="${target}/deleted" state="${target}/cluster-state"
+  local foreign_id output status=0
+  copy_runtime_files "${target}"
+  copy_runtime_files "${foreign}"
+  write_kind_mock "${target}"
+  write_kubectl_mock "${target}"
+  foreign_id="$(checkout_id_for_target "${foreign}")" || return
+  printf 'present\n' >"${state}"
+  if output="$(FIXTURE_CLUSTER_STATE_FILE="${state}" \
+    FIXTURE_DELETED_MARKER="${marker}" FIXTURE_CHECKOUT_ID="${foreign_id}" \
+    run_runtime_fixture "${target}" \
+    tools/kubernetes/kind-down.sh --if-present 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ||
+    "${output}" != *'refusing cluster owned by another checkout'* ]]; then
+    printf 'FAIL  kube-red       foreign checkout status=%s output=%q\n' \
+      "${status}" "${output}" >&2
+    return 1
+  fi
+  [[ ! -e "${marker}" ]]
+  run_host_command grep -Fqx present "${state}"
+  printf 'PASS  kube-red       other checkout could not delete the cluster\n'
+}
+
+prove_marker_replacement_blocks_cluster_delete() {
+  local target="${WORK_DIR}/marker-replacement-delete"
+  local marker="${target}/deleted" state="${target}/cluster-state"
+  local count="${target}/snapshot-count" checkout_id output status=0
+  copy_runtime_files "${target}"
+  write_kind_mock "${target}"
+  write_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
+  printf 'present\n' >"${state}"
+  if output="$(FIXTURE_CLUSTER_STATE_FILE="${state}" \
+    FIXTURE_DELETED_MARKER="${marker}" FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    FIXTURE_OWNERSHIP_MODE=replace FIXTURE_SNAPSHOT_COUNT_FILE="${count}" \
+    run_runtime_fixture "${target}" \
+    tools/kubernetes/kind-down.sh --if-present 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ||
+    "${output}" != *'ownership marker changed before mutation'* ]]; then
+    printf 'FAIL  kube-red       replacement delete status=%s output=%q\n' \
+      "${status}" "${output}" >&2
+    return 1
+  fi
+  [[ ! -e "${marker}" && -f "${target}/.platform/kubeconfig" ]]
+  run_host_command grep -Fqx present "${state}"
+  printf 'PASS  kube-red       marker replacement blocked cluster deletion\n'
+}
+
+prove_marker_replacement_blocks_kind_up_pass() {
+  local target="${WORK_DIR}/marker-replacement-up"
+  local marker="${target}/deleted" state="${target}/cluster-state"
+  local count="${target}/snapshot-count" checkout_id output status=0
+  copy_runtime_files "${target}"
+  write_kind_mock "${target}"
+  write_docker_mock "${target}"
+  write_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
+  printf 'absent\n' >"${state}"
+  if output="$(FIXTURE_CLUSTER_STATE_FILE="${state}" \
+    FIXTURE_DELETED_MARKER="${marker}" FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    FIXTURE_OWNERSHIP_MODE=replace FIXTURE_SNAPSHOT_COUNT_FILE="${count}" \
+    run_runtime_fixture "${target}" tools/kubernetes/kind-up.sh 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ||
+    "${output}" != *'ownership marker changed before mutation'* ]]; then
+    printf 'FAIL  kube-red       replacement kind-up status=%s output=%q\n' \
+      "${status}" "${output}" >&2
+    return 1
+  fi
+  [[ ! -e "${marker}" && -f "${target}/.platform/kubeconfig" ]]
+  run_host_command grep -Fqx present "${state}"
+  printf 'PASS  kube-red       marker replacement blocked kind-up PASS and cleanup\n'
 }
 
 prove_unowned_cluster_is_not_deleted() {
   local target="${WORK_DIR}/unowned"
   local marker="${target}/deleted"
+  local checkout_id
   copy_runtime_files "${target}"
   write_kind_mock "${target}"
   write_ownership_kubectl_mock "${target}"
-  if FIXTURE_DELETED_MARKER="${marker}" run_runtime_fixture "${target}" \
+  checkout_id="$(checkout_id_for_target "${target}")" || return
+  if FIXTURE_DELETED_MARKER="${marker}" \
+    FIXTURE_CHECKOUT_ID="${checkout_id}" FIXTURE_OWNERSHIP_OWNER=not-flare \
+    run_runtime_fixture "${target}" \
     tools/kubernetes/kind-down.sh --if-present >/dev/null 2>&1; then
     printf 'FAIL  kube-red       unowned cluster was accepted\n' >&2
     return 1
@@ -831,33 +985,21 @@ prove_unowned_cluster_is_not_deleted() {
 
 write_owned_kubectl_mock() {
   local target="$1"
-  run_host_command cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
-#!/bin/bash -p
-set -euo pipefail
-arguments="$*"
-if [[ "${arguments}" == *"config current-context"* ]]; then
-  printf 'kind-flare-platform-dev\n'
-elif [[ "${arguments}" == *"jsonpath={.data.owner}"* ]]; then
-  printf 'flare-platform-infra\n'
-elif [[ "${arguments}" == *"jsonpath={.data.cluster-name}"* ]]; then
-  printf 'flare-platform-dev\n'
-else
-  exit 2
-fi
-MOCK
-  publish_managed_mock "${target}" kubectl
+  write_kubectl_mock "${target}"
 }
 
 prove_owned_cluster_is_deleted() {
   local target="${WORK_DIR}/owned"
   local marker="${target}/deleted"
   local state="${target}/cluster-state"
+  local checkout_id
   copy_runtime_files "${target}"
   write_kind_mock "${target}"
   write_owned_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'present\n' >"${state}"
   FIXTURE_CLUSTER_STATE_FILE="${state}" \
-    FIXTURE_DELETED_MARKER="${marker}" \
+    FIXTURE_DELETED_MARKER="${marker}" FIXTURE_CHECKOUT_ID="${checkout_id}" \
     run_runtime_fixture "${target}" \
     tools/kubernetes/kind-down.sh --if-present >/dev/null
   [[ -e "${marker}" ]]
@@ -883,35 +1025,20 @@ prove_absent_destroy_is_idempotent() {
 
 write_namespace_kubectl_mock() {
   local target="$1"
-  run_host_command cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
-#!/bin/bash -p
-set -euo pipefail
-arguments="$*"
-if [[ "${arguments}" == *"config current-context"* ]]; then
-  printf 'kind-flare-platform-dev\n'
-elif [[ "${arguments}" == *"delete namespace"* ]]; then
-  printf 'absent\n' >"${FIXTURE_NAMESPACE_STATE:?}"
-elif [[ "${arguments}" == *"get namespace"* ]]; then
-  if [[ "${FIXTURE_NAMESPACE_QUERY_FAIL:-false}" == true ]]; then
-    exit 7
-  fi
-  [[ "$(cat "${FIXTURE_NAMESPACE_STATE:?}")" == absent ]] || \
-    printf 'namespace/flare-platform-reference\n'
-else
-  exit 2
-fi
-MOCK
-  publish_managed_mock "${target}" kubectl
+  write_kubectl_mock "${target}"
 }
 
 prove_namespace_cleanup() {
   local target="${WORK_DIR}/namespace"
   local state="${target}/namespace-state"
+  local checkout_id
   copy_runtime_files "${target}"
   write_namespace_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'fixture\n' >"${target}/.platform/kubeconfig"
   printf 'present\n' >"${state}"
-  FIXTURE_NAMESPACE_STATE="${state}" run_runtime_fixture "${target}" \
+  FIXTURE_NAMESPACE_STATE="${state}" FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    run_runtime_fixture "${target}" \
     tools/kubernetes/delete-namespace.sh >/dev/null
   run_host_command grep -Fqx absent "${state}"
   printf 'PASS  kube-green     namespace cleanup reached proven absence\n'
@@ -920,18 +1047,53 @@ prove_namespace_cleanup() {
 prove_namespace_query_failure_is_not_absence() {
   local target="${WORK_DIR}/namespace-query-failure"
   local state="${target}/namespace-state"
+  local marker="${target}/namespace-delete-attempted" checkout_id
   copy_runtime_files "${target}"
   write_namespace_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'fixture\n' >"${target}/.platform/kubeconfig"
   printf 'present\n' >"${state}"
   if FIXTURE_NAMESPACE_STATE="${state}" \
-    FIXTURE_NAMESPACE_QUERY_FAIL=true \
+    FIXTURE_NAMESPACE_QUERY_FAIL=true FIXTURE_CHECKOUT_ID="${checkout_id}" \
+    FIXTURE_NAMESPACE_DELETE_MARKER="${marker}" \
     run_runtime_fixture "${target}" \
     tools/kubernetes/delete-namespace.sh >/dev/null 2>&1; then
     printf 'FAIL  kube-red       API failure was mistaken for namespace absence\n' >&2
     return 1
   fi
+  [[ ! -e "${marker}" ]]
+  run_host_command grep -Fqx present "${state}"
   printf 'PASS  kube-red       API failure was not mistaken for cleanup\n'
+}
+
+prove_other_checkout_namespace_is_not_deleted() {
+  local target="${WORK_DIR}/namespace-current-checkout"
+  local foreign="${WORK_DIR}/namespace-foreign-checkout"
+  local state="${target}/namespace-state"
+  local marker="${target}/namespace-delete-attempted" foreign_id output status=0
+  copy_runtime_files "${target}"
+  copy_runtime_files "${foreign}"
+  write_namespace_kubectl_mock "${target}"
+  foreign_id="$(checkout_id_for_target "${foreign}")" || return
+  printf 'fixture\n' >"${target}/.platform/kubeconfig"
+  printf 'present\n' >"${state}"
+  if output="$(FIXTURE_NAMESPACE_STATE="${state}" \
+    FIXTURE_NAMESPACE_DELETE_MARKER="${marker}" \
+    FIXTURE_CHECKOUT_ID="${foreign_id}" run_runtime_fixture "${target}" \
+    tools/kubernetes/delete-namespace.sh 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne 1 ||
+    "${output}" != *'refusing cluster owned by another checkout'* ]]; then
+    printf 'FAIL  kube-red       foreign namespace status=%s output=%q\n' \
+      "${status}" "${output}" >&2
+    return 1
+  fi
+  [[ ! -e "${marker}" ]]
+  run_host_command grep -Fqx present "${state}"
+  printf 'PASS  kube-red       other checkout could not delete the namespace\n'
 }
 
 prove_kubeconfig_symlink_is_rejected() {
@@ -955,27 +1117,18 @@ prove_kubeconfig_symlink_is_rejected() {
 
 write_noisy_kubectl_mock() {
   local target="$1"
-  run_host_command cat >"${target}/.platform/aqua/test-fixtures/kubectl" <<'MOCK'
-#!/bin/bash -p
-set -euo pipefail
-if [[ "$*" == *"config current-context"* ]]; then
-  printf 'kind-flare-platform-dev\n'
-else
-  printf '%*s' 200000 '' | while IFS= read -r -N 4096 chunk; do
-    printf '%s' "${chunk// /x}"
-  done
-fi
-MOCK
-  publish_managed_mock "${target}" kubectl
+  write_kubectl_mock "${target}"
 }
 
 prove_diagnostics_are_bounded() {
   local target="${WORK_DIR}/diagnostics"
-  local oversized
+  local oversized checkout_id
   copy_runtime_files "${target}"
   write_noisy_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'fixture\n' >"${target}/.platform/kubeconfig"
-  run_runtime_fixture "${target}" tools/kubernetes/diagnostics.sh >/dev/null
+  FIXTURE_CHECKOUT_ID="${checkout_id}" FIXTURE_NOISY_RESPONSES=true \
+    run_runtime_fixture "${target}" tools/kubernetes/diagnostics.sh >/dev/null
   oversized="$(run_host_command find "${target}/.platform/diagnostics" \
     -type f -size +132000c -print -quit)"
   [[ -z "${oversized}" ]]
@@ -989,6 +1142,173 @@ prove_diagnostics_are_bounded() {
   printf 'PASS  kube-green     failure diagnostics remain stream-bounded\n'
 }
 
+shared_lease_root_for_target() (
+  local target="$1"
+  builtin cd -P -- "${target}" || return
+  builtin source tools/common/env.sh
+  builtin source tools/common/lifecycle-lease.sh
+  lifecycle_lease_configure_paths || return
+  builtin printf '%s\n' "${LIFECYCLE_LEASE_DIRECTORY}"
+)
+
+assert_shared_lease_lock_only() {
+  local target="$1" root canonical entries lock_fd status=0
+  root="$(shared_lease_root_for_target "${target}")" || return
+  [[ "${root}" =~ ^/tmp/flare-platform-lifecycle-lease-[0-9a-f]{64}$ ]]
+  [[ -d "${root}" && ! -L "${root}" ]]
+  canonical="$(run_host_command readlink -f -- "${root}")" || return
+  [[ "${canonical}" == "${root}" ]]
+  [[ "$(run_host_command stat -Lc '%u:%a:%h' -- "${root}")" == "${EUID}:700:2" ]]
+  entries="$(run_host_command find -H "${root}" -mindepth 1 -maxdepth 1 \
+    -printf '%f\n' | run_host_command sort)" || return
+  [[ "${entries}" == lock ]]
+  [[ -f "${root}/lock" && ! -L "${root}/lock" ]]
+  [[ "$(run_host_command stat -Lc '%u:%a:%h:%s' -- "${root}/lock")" == "${EUID}:600:1:0" ]]
+  exec {lock_fd}<>"${root}/lock" || return
+  run_host_command flock --exclusive --nonblock --conflict-exit-code 77 \
+    "${lock_fd}" || status=$?
+  { exec {lock_fd}>&-; } 2>/dev/null || status=1
+  ((status == 0))
+}
+
+prove_build_reference_requires_lifecycle_lease() {
+  local target="${WORK_DIR}/build-reference-lease"
+  local docker_log="${target}/docker.log" kind_log="${target}/kind.log"
+  local kubectl_log="${target}/kubectl.log" output="${target}/build.out"
+  local status=0 script
+  copy_runtime_files "${target}"
+  for script in build-reference reference-context buildkit-result; do
+    run_host_command cp -- "${PLATFORM_ROOT}/tools/kubernetes/${script}.sh" \
+      "${target}/tools/kubernetes/${script}.sh"
+  done
+  if FIXTURE_DOCKER_ENV_LOG="${docker_log}" FIXTURE_KIND_LOG="${kind_log}" \
+    FIXTURE_KUBECTL_LOG="${kubectl_log}" run_runtime_fixture "${target}" \
+    tools/kubernetes/build-reference.sh >"${output}" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq 76 ]]
+  run_host_command grep -Fqx \
+    'FAIL  lifecycle     inherited lease identity is incomplete' "${output}"
+  [[ ! -e "${docker_log}" && ! -L "${docker_log}" &&
+    ! -e "${kind_log}" && ! -L "${kind_log}" &&
+    ! -e "${kubectl_log}" && ! -L "${kubectl_log}" &&
+    ! -e "${target}/.platform/reference" &&
+    ! -L "${target}/.platform/reference" ]]
+  printf 'PASS  lifecycle     internal reference build requires inherited lease\n'
+}
+
+prove_clean_waits_for_lifecycle_lease() (
+  local target="${WORK_DIR}/clean-lease" ready release sentinel output
+  local holder_pid status=0 attempt
+  copy_runtime_files "${target}"
+  write_kind_mock "${target}"
+  ready="${target}/holder.ready"
+  release="${target}/holder.release"
+  sentinel="${target}/.platform/preserve.state"
+  printf 'preserve\n' >"${sentinel}"
+  (
+    builtin cd -P -- "${target}" || exit
+    builtin source tools/common/env.sh
+    builtin source tools/common/lifecycle-lease.sh
+    # Invoked indirectly by the EXIT trap below.
+    # shellcheck disable=SC2317,SC2329
+    cleanup_holder() {
+      local holder_status=$?
+      trap - EXIT
+      lifecycle_lease_release >/dev/null 2>&1 || true
+      exit "${holder_status}"
+    }
+    trap cleanup_holder EXIT
+    lifecycle_lease_acquire smoke
+    printf 'ready\n' >"${ready}"
+    while [[ ! -s "${release}" ]]; do run_host_command sleep 0.02; done
+    lifecycle_lease_release
+    trap - EXIT
+  ) &
+  holder_pid=$!
+  trap 'builtin kill -KILL "${holder_pid}" 2>/dev/null || true
+    builtin wait "${holder_pid}" 2>/dev/null || true' EXIT
+  for ((attempt = 1; attempt <= 250; attempt++)); do
+    [[ ! -s "${ready}" ]] || break
+    run_host_command sleep 0.02
+  done
+  [[ -s "${ready}" ]] || return 1
+  if output="$(FIXTURE_CLUSTER_STATE=absent \
+    run_runtime_fixture "${target}" tools/common/clean.sh 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq "${LIFECYCLE_LEASE_BUSY_STATUS:-75}" &&
+    "${output}" == *'another lifecycle action is active'* ]]
+  run_host_command grep -Fqx preserve "${sentinel}"
+  printf 'release\n' >"${release}"
+  builtin wait "${holder_pid}"
+  holder_pid=''
+  FIXTURE_CLUSTER_STATE=absent \
+    run_runtime_fixture "${target}" tools/common/clean.sh >/dev/null
+  [[ ! -e "${target}/.platform" && ! -L "${target}/.platform" ]]
+  assert_shared_lease_lock_only "${target}"
+  trap - EXIT
+  printf 'PASS  lifecycle     clean removed local state and retained free shared lock\n'
+)
+
+prove_cross_checkout_create_is_serialized() (
+  local first="${WORK_DIR}/create-first" second="${WORK_DIR}/create-second"
+  local state="${WORK_DIR}/create-cluster.state"
+  local ready="${WORK_DIR}/create-first.ready"
+  local release="${WORK_DIR}/create-first.release"
+  local first_log="${WORK_DIR}/create-first.kind.log"
+  local second_log="${WORK_DIR}/create-second.kind.log"
+  local first_id second_id first_pid='' output status=0 attempt
+  copy_runtime_files "${first}"
+  copy_runtime_files "${second}"
+  write_kind_mock "${first}"
+  write_kind_mock "${second}"
+  write_docker_mock "${first}"
+  write_docker_mock "${second}"
+  write_kubectl_mock "${first}"
+  write_kubectl_mock "${second}"
+  first_id="$(checkout_id_for_target "${first}")" || return
+  second_id="$(checkout_id_for_target "${second}")" || return
+  [[ "${first_id}" != "${second_id}" ]]
+  printf 'absent\n' >"${state}"
+  FIXTURE_CLUSTER_STATE_FILE="${state}" FIXTURE_CHECKOUT_ID="${first_id}" \
+    FIXTURE_KIND_LOG="${first_log}" FIXTURE_KIND_CREATE_READY="${ready}" \
+    FIXTURE_KIND_CREATE_RELEASE="${release}" run_runtime_fixture "${first}" \
+    tools/kubernetes/kind-up.sh >"${first}/kind-up.out" 2>&1 &
+  first_pid=$!
+  trap 'builtin kill -KILL "${first_pid}" 2>/dev/null || true
+    builtin wait "${first_pid}" 2>/dev/null || true' EXIT
+  for ((attempt = 1; attempt <= 250; attempt++)); do
+    [[ ! -s "${ready}" ]] || break
+    run_host_command sleep 0.02
+  done
+  [[ -s "${ready}" && "$(<"${state}")" == absent ]]
+  if output="$(FIXTURE_CLUSTER_STATE_FILE="${state}" \
+    FIXTURE_CHECKOUT_ID="${second_id}" FIXTURE_KIND_LOG="${second_log}" \
+    run_runtime_fixture "${second}" tools/kubernetes/kind-up.sh 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  [[ "${status}" -eq 75 &&
+    "${output}" == *'another lifecycle action is active'* &&
+    ! -e "${second_log}" && "$(<"${state}")" == absent ]]
+  printf 'release\n' >"${release}"
+  builtin wait "${first_pid}"
+  first_pid=''
+  run_host_command grep -Fqx 'PASS  kind-up       flare-platform-dev' \
+    "${first}/kind-up.out"
+  [[ "$(<"${state}")" == present ]]
+  [[ "$(run_host_command grep -Fc \
+    'create cluster --name flare-platform-dev' "${first_log}")" -eq 1 ]]
+  trap - EXIT
+  printf 'PASS  lifecycle     two checkouts serialized the absent-cluster create edge\n'
+)
+
 main() {
   WORK_DIR="$(run_host_command mktemp -d)"
   trap 'run_host_command rm -rf -- "${WORK_DIR}"' EXIT
@@ -1000,13 +1320,23 @@ main() {
   prove_docker_adapter_reds
   prove_post_create_failure_is_cleaned
   prove_create_failure_stops_without_blind_delete
+  prove_checkout_identity_is_stable_and_distinct
+  prove_marker_grammar_reds
   prove_unowned_cluster_is_not_deleted
+  prove_other_checkout_cluster_is_not_deleted
+  prove_marker_replacement_blocks_cluster_delete
+  prove_marker_replacement_blocks_kind_up_pass
   prove_owned_cluster_is_deleted
   prove_absent_destroy_is_idempotent
   prove_namespace_cleanup
   prove_namespace_query_failure_is_not_absence
+  prove_other_checkout_namespace_is_not_deleted
   prove_kubeconfig_symlink_is_rejected
   prove_diagnostics_are_bounded
+  prove_build_reference_requires_lifecycle_lease
+  prove_clean_waits_for_lifecycle_lease
+  prove_cross_checkout_create_is_serialized
+  "${PLATFORM_ROOT}/tests/fixtures/kubernetes/owned-snapshot-race.sh"
 }
 
 main "$@"

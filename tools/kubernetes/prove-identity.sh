@@ -147,22 +147,39 @@ prove_build_env_contract() {
 
 prove_buildkit_result_contract() {
   local valid="${PROOF_DIRECTORY}/buildkit-valid.log"
+  local timed="${PROOF_DIRECTORY}/buildkit-timed.log"
   local empty="${PROOF_DIRECTORY}/buildkit-empty.log"
   local duplicate="${PROOF_DIRECTORY}/buildkit-duplicate.log"
+  local digest_mismatch="${PROOF_DIRECTORY}/buildkit-digest-mismatch.log"
+  local step_mismatch="${PROOF_DIRECTORY}/buildkit-step-mismatch.log"
+  local integer_duration="${PROOF_DIRECTORY}/buildkit-integer-duration.log"
+  local timed_trailing="${PROOF_DIRECTORY}/buildkit-timed-trailing.log"
   local uppercase="${PROOF_DIRECTORY}/buildkit-uppercase.log"
   local wrong_prefix="${PROOF_DIRECTORY}/buildkit-wrong-prefix.log"
   local wrong_suffix="${PROOF_DIRECTORY}/buildkit-wrong-suffix.log"
   local result="sha256:${SHA_A}"
   printf '#1 preparing build\n#12 writing image %s done\n' "${result}" >"${valid}"
+  printf '#12 writing image %s\n#12 writing image %s 0.0s done\n' \
+    "${result}" "${result}" >"${timed}"
   printf '#1 preparing build\n' >"${empty}"
-  printf '#12 writing image %s done\n#13 writing image %s done\n' \
+  printf '#12 writing image %s done\n#12 writing image %s 0.0s done\n' \
     "${result}" "${result}" >"${duplicate}"
+  printf '#12 writing image %s\n#12 writing image sha256:%s 0.0s done\n' \
+    "${result}" "${SHA_B}" >"${digest_mismatch}"
+  printf '#12 writing image %s\n#13 writing image %s 0.0s done\n' \
+    "${result}" "${result}" >"${step_mismatch}"
+  printf '#12 writing image %s 0s done\n#12 writing image %s done\n' \
+    "${result}" "${result}" >"${integer_duration}"
+  printf '#12 writing image %s 0.0s done suffix\n#12 writing image %s done\n' \
+    "${result}" "${result}" >"${timed_trailing}"
   printf '#12 writing image sha256:%s done\n' "${SHA_A^^}" >"${uppercase}"
   printf 'prefix #12 writing image %s done\n' "${result}" >"${wrong_prefix}"
   printf '#12 writing image %s done suffix\n' "${result}" >"${wrong_suffix}"
 
   if [[ "$(buildkit_result_config_id "${valid}")" != "${result}" ||
-  "$(runtime_identity_extract_build_result_id "${valid}")" != "${result}" ]]; then
+  "$(runtime_identity_extract_build_result_id "${valid}")" != "${result}" ||
+  "$(buildkit_result_config_id "${timed}")" != "${result}" ||
+  "$(runtime_identity_extract_build_result_id "${timed}")" != "${result}" ]]; then
     printf 'FAIL  runtime-id    canonical BuildKit result was not consumed exactly\n' >&2
     return 1
   fi
@@ -172,6 +189,18 @@ prove_buildkit_result_contract() {
   expect_identity_failure duplicate-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
     'FAIL  runtime-id    malformed Docker build result identity' \
     runtime_identity_extract_build_result_id "${duplicate}"
+  expect_identity_failure transient-digest-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${digest_mismatch}"
+  expect_identity_failure transient-step-mismatch "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${step_mismatch}"
+  expect_identity_failure integer-buildkit-duration "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${integer_duration}"
+  expect_identity_failure timed-buildkit-trailing "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
+    'FAIL  runtime-id    malformed Docker build result identity' \
+    runtime_identity_extract_build_result_id "${timed_trailing}"
   expect_identity_failure uppercase-buildkit-result "${RUNTIME_IDENTITY_BOUNDARY_STATUS}" \
     'FAIL  runtime-id    malformed Docker build result identity' \
     runtime_identity_extract_build_result_id "${uppercase}"
@@ -189,8 +218,9 @@ prove_reference_buildkit_result_contract() (
   local duplicate="${PROOF_DIRECTORY}/reference-buildkit-duplicate.log"
   local result="sha256:${SHA_A}"
   builtin source "${PLATFORM_ROOT}/tools/kubernetes/build-reference.sh"
-  printf '#12 writing image %s done\n' "${result}" >"${valid}"
-  printf '#12 writing image %s done\n#13 writing image %s done\n' \
+  printf '#12 writing image %s\n#12 writing image %s 0.0s done\n' \
+    "${result}" "${result}" >"${valid}"
+  printf '#12 writing image %s done\n#12 writing image %s 0.0s done\n' \
     "${result}" "${result}" >"${duplicate}"
   if [[ "$(extract_result_config_id "${valid}")" != "${result}" ]]; then
     printf 'FAIL  reference-build canonical BuildKit result was not consumed exactly\n' >&2

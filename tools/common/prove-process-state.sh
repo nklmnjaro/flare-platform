@@ -109,6 +109,35 @@ prove_parser_contracts() {
     'PASS  process-state parser handles comm, pgrp=0, stopped, malformed stat, and unavailable proc\n'
 }
 
+prove_disappearing_stat_is_silent_absence() (
+  local root="${PROCESS_PROOF_DIRECTORY}/disappearing-proc"
+  local target="${root}/903/stat"
+  local diagnostic="${PROCESS_PROOF_DIRECTORY}/disappearing-stat.err"
+  local state status=0
+  run_host_command mkdir -p -- "${root}/self"
+  builtin printf 'fixture proc root available\n' >"${root}/self/stat"
+  write_stat_fixture "${root}" 903 worker S 903 457
+  builtin set -T
+  # shellcheck disable=SC2016
+  builtin trap '
+    if [[ "${path:-}" == "${target}" &&
+      "${BASH_COMMAND}" == *"builtin read -r record"* ]]; then
+      builtin trap - DEBUG
+      run_host_command mv -- "${target}" "${target}.gone"
+    fi
+  ' DEBUG
+  if state="$(_linux_process_state_at 903 '' "${root}" 2>"${diagnostic}")"; then
+    status=0
+  else
+    status=$?
+  fi
+  builtin trap - DEBUG
+  [[ "${status}" -eq 0 && "${state}" == absent && ! -s "${diagnostic}" &&
+    -f "${target}.gone" ]] || return 1
+  builtin printf \
+    'PASS  process-state disappearing stat is silent absence\n'
+)
+
 prove_imported_environment_guard() (
   local marker="${PROCESS_PROOF_DIRECTORY}/imported.marker" output bash_path
   bash_path="$(host_command_path bash)" || return
@@ -215,6 +244,7 @@ main() {
     "${PROCESS_FIXTURE_SOURCE}"
   prove_imported_environment_guard
   prove_parser_contracts
+  prove_disappearing_stat_is_silent_absence
   prove_zombie_is_terminal
   prove_live_group_member
   builtin trap - EXIT

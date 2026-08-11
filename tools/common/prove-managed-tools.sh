@@ -6,8 +6,27 @@ PROVE_MANAGED_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
   PROVE_MANAGED_SOURCE_DIR=.
 builtin source "${PROVE_MANAGED_SOURCE_DIR}/env.sh"
 unset PROVE_MANAGED_SOURCE_DIR
+# shellcheck source=process-state.sh
+builtin source "${PLATFORM_ROOT}/tools/common/process-state.sh"
 
 WORK_DIR=""
+TAIL_EXEC_TRACKED_PID=""
+TAIL_EXEC_OBSERVED_PGID=""
+
+cleanup_tail_exec_group() {
+  local pgid
+  builtin trap - EXIT
+  for pgid in "${TAIL_EXEC_OBSERVED_PGID}" "${TAIL_EXEC_TRACKED_PID}"; do
+    linux_process_valid_id "${pgid}" || continue
+    [[ "${pgid}" != "${BASHPID}" ]] || continue
+    builtin kill -KILL -- "-${pgid}" 2>/dev/null || true
+  done
+  if linux_process_valid_id "${TAIL_EXEC_TRACKED_PID}"; then
+    builtin wait "${TAIL_EXEC_TRACKED_PID}" 2>/dev/null || true
+  fi
+  TAIL_EXEC_TRACKED_PID=""
+  TAIL_EXEC_OBSERVED_PGID=""
+}
 
 prepare_fixture() {
   local target="$1"
@@ -22,8 +41,8 @@ prepare_fixture() {
   run_host_command cp "${PLATFORM_ROOT}/aqua.yaml" "${target}/aqua.yaml"
   run_host_command cp "${PLATFORM_ROOT}/aqua-checksums.json" \
     "${target}/aqua-checksums.json"
-  for path in docker-target.sh env.sh host-commands.sh process-state.sh state.sh \
-    tooling.sh run-managed-tool.sh; do
+  for path in checkout-identity.sh docker-target.sh env.sh host-commands.sh \
+    lifecycle-lease.sh process-state.sh state.sh tooling.sh run-managed-tool.sh; do
     run_host_command cp "${PLATFORM_ROOT}/tools/common/${path}" \
       "${target}/tools/common/${path}"
   done
@@ -293,7 +312,17 @@ for variable in AQUA_GLOBAL_CONFIG AQUA_POLICY_CONFIG AQUA_DISABLE_POLICY \
   [[ ! -v "${variable}" ]]
 done
 case "${0##*/}" in
-  go) printf 'canonical-aqua-proxy\n' ;;
+  go)
+    if [[ -n "${TAIL_EXEC_EXEC_MARKER:-}" ]]; then
+      printf 'executed\n' >"${TAIL_EXEC_EXEC_MARKER}"
+    fi
+    if [[ "${1:-}" == hold-group && $# -eq 2 ]]; then
+      trap '' TERM
+      printf '%s\n' "${BASHPID}" >"${2}"
+      while :; do sleep 1 || :; done
+    fi
+    printf 'canonical-aqua-proxy\n'
+    ;;
   prek)
     [[ "${1:-}" == install ]]
     shift
@@ -448,6 +477,166 @@ FAKE
   run_host_command rm -f -- "${backup}"
   printf 'PASS  tooling-red   tampered proxy rejected by host-rooted digest\n'
 }
+
+prove_tail_exec_validation() (
+  local target="$1" marker output status=0
+  marker="${target}/tail-exec-validation.marker"
+  output="${target}/tail-exec-validation.out"
+  run_host_command rm -f -- "${marker}"
+  (
+    builtin cd -P -- "${target}"
+    builtin source tools/common/env.sh
+    builtin source tools/common/tooling.sh
+    FIXTURE_EXPECTED_AQUA_ROOT="${target}/.platform/aqua" \
+      FIXTURE_EXPECTED_AQUA_CONFIG="${target}/aqua.yaml" \
+      TAIL_EXEC_EXEC_MARKER="${marker}" \
+      exec_managed_tool_bounded invalid go version
+  ) >"${output}" 2>&1 || status=$?
+  [[ "${status}" -eq "${HOST_COMMAND_USAGE_STATUS}" ]]
+  run_host_command grep -Fqx \
+    'FAIL  aqua-trust    invalid bounded duration: invalid; expected 1s..600s' \
+    "${output}"
+  [[ ! -e "${marker}" && ! -L "${marker}" ]]
+  printf 'PASS  tooling-red   tail-exec validation failed before managed execution\n'
+)
+
+prove_tail_exec_bounded_group() (
+  local target="$1" pid_file output snapshot state
+  local observed_pid observed_pgrp observed_starttime kernel_state
+  local tracked_starttime tool_pid tool_pgrp tool_starttime attempt
+  pid_file="${target}/tail-exec.pid"
+  output="${target}/tail-exec.out"
+  run_host_command rm -f -- "${pid_file}"
+  builtin trap cleanup_tail_exec_group EXIT
+  builtin set -m
+  (
+    builtin set +m
+    builtin cd -P -- "${target}"
+    builtin source tools/common/env.sh
+    builtin source tools/common/tooling.sh
+    FIXTURE_EXPECTED_AQUA_ROOT="${target}/.platform/aqua" \
+      FIXTURE_EXPECTED_AQUA_CONFIG="${target}/aqua.yaml" \
+      exec_managed_tool_bounded 30s go hold-group "${pid_file}"
+  ) >"${output}" 2>&1 &
+  TAIL_EXEC_TRACKED_PID=$!
+  builtin set +m
+  snapshot="$(linux_process_snapshot "${TAIL_EXEC_TRACKED_PID}")" || return
+  IFS=$'\t' builtin read -r observed_pid observed_pgrp observed_starttime \
+    kernel_state <<<"${snapshot}"
+  [[ "${observed_pid}" == "${TAIL_EXEC_TRACKED_PID}" &&
+    "${observed_pgrp}" == "${TAIL_EXEC_TRACKED_PID}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  tracked_starttime="${observed_starttime}"
+  for ((attempt = 1; attempt <= 250; attempt++)); do
+    [[ ! -s "${pid_file}" ]] || break
+    state="$(linux_process_group_state \
+      "${TAIL_EXEC_TRACKED_PID}" "${observed_starttime}")" || return
+    [[ "${state}" == live ]] || break
+    run_host_command sleep 0.02
+  done
+  IFS= builtin read -r tool_pid <"${pid_file}" || return
+  snapshot="$(linux_process_snapshot "${tool_pid}")" || return
+  IFS=$'\t' builtin read -r observed_pid tool_pgrp tool_starttime \
+    kernel_state <<<"${snapshot}"
+  TAIL_EXEC_OBSERVED_PGID="${tool_pgrp}"
+  [[ "${observed_pid}" == "${tool_pid}" &&
+    "${tool_pgrp}" == "${TAIL_EXEC_TRACKED_PID}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  snapshot="$(linux_process_snapshot "${TAIL_EXEC_TRACKED_PID}")" || return
+  IFS=$'\t' builtin read -r observed_pid observed_pgrp observed_starttime \
+    kernel_state <<<"${snapshot}"
+  [[ "${observed_pid}" == "${TAIL_EXEC_TRACKED_PID}" &&
+    "${observed_pgrp}" == "${TAIL_EXEC_TRACKED_PID}" &&
+    "${observed_starttime}" == "${tracked_starttime}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  builtin kill -TERM -- "-${TAIL_EXEC_TRACKED_PID}"
+  run_host_command sleep 0.1
+  state="$(linux_process_group_state \
+    "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+  [[ "${state}" == live ]]
+  builtin kill -KILL -- "-${TAIL_EXEC_TRACKED_PID}"
+  builtin wait "${TAIL_EXEC_TRACKED_PID}" 2>/dev/null || true
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    state="$(linux_process_group_state \
+      "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+    [[ "${state}" == live ]] || break
+    run_host_command sleep 0.05
+  done
+  [[ "${state}" != live ]]
+  run_host_command sleep 0.1
+  state="$(linux_process_group_state \
+    "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+  [[ "${state}" != live ]]
+  state="$(linux_process_state "${tool_pid}" "${tool_starttime}")" || return
+  [[ "${state}" != live ]]
+  TAIL_EXEC_TRACKED_PID=""
+  TAIL_EXEC_OBSERVED_PGID=""
+  builtin trap - EXIT
+  run_host_command rm -f -- "${pid_file}"
+  printf 'PASS  tooling       tail-exec bounded command retained tracked process group\n'
+)
+
+prove_tail_exec_natural_deadline() (
+  local target="$1" pid_file output snapshot state status=0
+  local observed_pid observed_pgrp tracked_starttime kernel_state
+  local tool_pid tool_pgrp tool_starttime attempt
+  pid_file="${target}/tail-exec-deadline.pid"
+  output="${target}/tail-exec-deadline.out"
+  run_host_command rm -f -- "${pid_file}"
+  builtin trap cleanup_tail_exec_group EXIT
+  builtin set -m
+  (
+    builtin set +m
+    builtin cd -P -- "${target}"
+    builtin source tools/common/env.sh
+    builtin source tools/common/tooling.sh
+    FIXTURE_EXPECTED_AQUA_ROOT="${target}/.platform/aqua" \
+      FIXTURE_EXPECTED_AQUA_CONFIG="${target}/aqua.yaml" \
+      exec_managed_tool_bounded 1s go hold-group "${pid_file}"
+  ) >"${output}" 2>&1 &
+  TAIL_EXEC_TRACKED_PID=$!
+  builtin set +m
+  snapshot="$(linux_process_snapshot "${TAIL_EXEC_TRACKED_PID}")" || return
+  IFS=$'\t' builtin read -r observed_pid observed_pgrp tracked_starttime \
+    kernel_state <<<"${snapshot}"
+  [[ "${observed_pid}" == "${TAIL_EXEC_TRACKED_PID}" &&
+    "${observed_pgrp}" == "${TAIL_EXEC_TRACKED_PID}" ]] || return 1
+  linux_process_terminal_kernel_state "${kernel_state}" && return 1
+  for ((attempt = 1; attempt <= 250; attempt++)); do
+    [[ ! -s "${pid_file}" ]] || break
+    state="$(linux_process_group_state \
+      "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+    [[ "${state}" == live ]] || break
+    run_host_command sleep 0.02
+  done
+  IFS= builtin read -r tool_pid <"${pid_file}" || return
+  snapshot="$(linux_process_snapshot "${tool_pid}")" || return
+  IFS=$'\t' builtin read -r observed_pid tool_pgrp tool_starttime \
+    kernel_state <<<"${snapshot}"
+  TAIL_EXEC_OBSERVED_PGID="${tool_pgrp}"
+  [[ "${observed_pid}" == "${tool_pid}" &&
+    "${tool_pgrp}" == "${TAIL_EXEC_TRACKED_PID}" ]] || return 1
+  builtin wait "${TAIL_EXEC_TRACKED_PID}" 2>/dev/null || status=$?
+  [[ "${status}" -eq 137 ]]
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    state="$(linux_process_group_state \
+      "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+    [[ "${state}" == live ]] || break
+    run_host_command sleep 0.05
+  done
+  [[ "${state}" != live ]]
+  run_host_command sleep 0.1
+  state="$(linux_process_group_state \
+    "${TAIL_EXEC_TRACKED_PID}" "${tracked_starttime}")" || return
+  [[ "${state}" != live ]]
+  state="$(linux_process_state "${tool_pid}" "${tool_starttime}")" || return
+  [[ "${state}" != live ]]
+  TAIL_EXEC_TRACKED_PID=""
+  TAIL_EXEC_OBSERVED_PGID=""
+  builtin trap - EXIT
+  run_host_command rm -f -- "${pid_file}"
+  printf 'PASS  tooling       tail-exec natural deadline killed resistant group\n'
+)
 
 stage_repository() {
   local target="$1"
@@ -831,6 +1020,9 @@ main() {
   prove_canonical_consumers "${target}"
   prove_inherited_functions_cannot_bypass "${target}"
   prove_project_state_boundary "${target}"
+  prove_tail_exec_validation "${target}"
+  prove_tail_exec_bounded_group "${target}"
+  prove_tail_exec_natural_deadline "${target}"
   prove_git_attestation_environment_is_sanitized
   prove_hook_runtime "${target}/fake-bin" \
     "${target}/FAKE_TOOLS_EXECUTED" "${target}"

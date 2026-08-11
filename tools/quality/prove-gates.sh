@@ -377,6 +377,7 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
   "${PLATFORM_ROOT}/tools/common/prove-process-state.sh"
+  "${PLATFORM_ROOT}/tools/common/prove-lifecycle-lease.sh"
   "${PLATFORM_ROOT}/tools/kubernetes/prove-identity.sh"
   "${PLATFORM_ROOT}/tools/kubernetes/smoke.sh" --self-check
   "${PLATFORM_ROOT}/tools/kubernetes/identity-negative-smoke.sh" --self-check
@@ -397,6 +398,7 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/common/prove-managed-tools.sh"
   prove_kube_context_guard
   "${PLATFORM_ROOT}/tools/kubernetes/prove-safety.sh"
+  "${PLATFORM_ROOT}/tests/fixtures/kubernetes/lifecycle-concurrency-matrix.sh"
   prove_commit_policy
 }
 
