@@ -6,7 +6,7 @@ unexport BASH_ENV ENV MAKEFILES MFLAGS GNUMAKEFLAGS
 .PHONY: help doctor environment-evidence bootstrap tool-lock hooks check-fast check
 .PHONY: prove-local prove-environment prove-gates verify
 .PHONY: prove-integrity prove-diagnostics artifact-pack artifact-verify diagnose verify-runtime
-.PHONY: recovery-pack recovery-verify prove-recovery
+.PHONY: recovery-pack recovery-verify prove-recovery prove-recovery-race
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
@@ -28,6 +28,7 @@ help:
 	  'recovery-pack  capture clean committed repository state' \
 	  'recovery-verify restore and verify a recovery capsule' \
 	  'prove-recovery prove repository recovery failures closed' \
+	  'prove-recovery-race run the recovery closure under Go race detection' \
 	  'diagnose       collect bounded local diagnostics' \
 	  'verify-runtime verify disposable Kubernetes runtime' \
 	  'verify         full static + disposable kind verification' \
@@ -64,7 +65,7 @@ prove-local:
 prove-environment:
 	@tools/bootstrap/prove-environment.sh
 
-prove-gates:
+prove-gates: prove-recovery
 	@tools/quality/prove-gates.sh
 
 prove-integrity:
@@ -141,11 +142,22 @@ prove-recovery:
 	  git_path="$$(host_command_path git)"; \
 	  builtin cd -- "$(CURDIR)/tools/recovery/capsule"; \
 	  RECOVERY_TEST_GIT="$${git_path}" \
-	    "$(CURDIR)/tools/common/run-managed-tool.sh" go test -count=1 ./...
+	    "$(CURDIR)/tools/common/run-managed-tool.sh" go test -count=1 \
+	      -run '^TestRecoveryClosure' ./...
+
+prove-recovery-race:
+	@set -euo pipefail; \
+	  builtin source "$(CURDIR)/tools/common/env.sh"; \
+	  git_path="$$(host_command_path git)"; \
+	  builtin cd -- "$(CURDIR)/tools/recovery/capsule"; \
+	  RECOVERY_TEST_GIT="$${git_path}" \
+	    "$(CURDIR)/tools/common/run-managed-tool.sh" go test -race -count=1 \
+	      -run '^TestRecoveryClosure' ./...
 
 verify:
 	@tools/quality/check.sh
-	@tools/quality/prove-gates.sh
+	@"$$(builtin source "$(CURDIR)/tools/common/env.sh"; \
+	  host_command_path make)" --no-print-directory -C "$(CURDIR)" prove-gates
 	@tools/kubernetes/verify.sh --action verify
 
 verify-runtime:

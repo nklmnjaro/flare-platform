@@ -32,7 +32,8 @@ prepare_fixture() {
   local target="$1"
   local path
   run_host_command mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
-    "${target}/tools/kubernetes" "${target}/tools/quality" "${target}/fake-bin"
+    "${target}/tools/kubernetes" "${target}/tools/quality" \
+    "${target}/tools/recovery/capsule" "${target}/fake-bin"
   run_host_command cp "${PLATFORM_ROOT}/Makefile" "${target}/Makefile"
   for path in aqua-trust.sh doctor.sh environment-profile.sh install-hooks.sh; do
     run_host_command cp "${PLATFORM_ROOT}/tools/bootstrap/${path}" \
@@ -311,8 +312,11 @@ for variable in AQUA_GLOBAL_CONFIG AQUA_POLICY_CONFIG AQUA_DISABLE_POLICY \
   AQUA_X_SYS_EXEC AQUA_EXPERIMENTAL_X_SYS_EXEC; do
   [[ ! -v "${variable}" ]]
 done
-case "${0##*/}" in
+  case "${0##*/}" in
   go)
+    if [[ -n "${FIXTURE_GO_CALL_RECORD:-}" ]]; then
+      printf 'go\n' >>"${FIXTURE_GO_CALL_RECORD}"
+    fi
     if [[ -n "${TAIL_EXEC_EXEC_MARKER:-}" ]]; then
       printf 'executed\n' >"${TAIL_EXEC_EXEC_MARKER}"
     fi
@@ -348,6 +352,22 @@ case "${0##*/}" in
 esac
 FAKE
   run_host_command chmod 0755 -- "${proxy}"
+}
+
+prepare_canonical_fixture_toolchain() {
+  local target="$1"
+  run_host_command mkdir -p \
+    "${target}/.platform/bootstrap" \
+    "${target}/.platform/aqua/bin" \
+    "${target}/.platform/aqua/internal/pkgs/test"
+  write_fixture_aqua "${target}/.platform/bootstrap/aqua"
+  pin_fixture_aqua "${target}" "${target}/.platform/bootstrap/aqua"
+  write_canonical_fixture_proxy "${target}"
+  pin_fixture_proxy \
+    "${target}" "${target}/.platform/aqua/internal/pkgs/test/aqua-proxy"
+  run_host_command ln -s internal/pkgs/test/aqua-proxy \
+    "${target}/.platform/aqua/aqua-proxy"
+  run_host_command ln -s ../aqua-proxy "${target}/.platform/aqua/bin/go"
 }
 
 prove_project_state_boundary() {
@@ -973,8 +993,9 @@ write_serial_probe() {
 
 prove_parallel_verify_is_serial() {
   local target="${WORK_DIR}/serial-repo" output record lock expected status=0
-  local fake_make marker
+  local fake_make marker recovery_marker
   prepare_fixture "${target}"
+  prepare_canonical_fixture_toolchain "${target}"
   write_serial_probe "${target}/tools/quality/check.sh" check
   write_serial_probe "${target}/tools/quality/prove-gates.sh" prove-gates
   write_serial_probe "${target}/tools/kubernetes/verify.sh" verify-runtime
@@ -983,6 +1004,7 @@ prove_parallel_verify_is_serial() {
   lock="${target}/parallel-verify.lock"
   fake_make="${target}/fake-bin/make"
   marker="${target}/hostile-make.marker"
+  recovery_marker="${target}/recovery-tool.marker"
   run_host_command cat >"${fake_make}" <<'FAKE'
 #!/bin/bash -p
 builtin printf 'executed\n' >"${HOSTILE_MAKE_MARKER:?}"
@@ -991,6 +1013,9 @@ FAKE
   run_host_command chmod 0755 -- "${fake_make}"
   if run_host_command env SERIAL_RECORD="${record}" SERIAL_LOCK="${lock}" \
     MAKE="${fake_make}" HOSTILE_MAKE_MARKER="${marker}" \
+    FIXTURE_EXPECTED_AQUA_ROOT="${target}/.platform/aqua" \
+    FIXTURE_EXPECTED_AQUA_CONFIG="${target}/aqua.yaml" \
+    FIXTURE_GO_CALL_RECORD="${recovery_marker}" \
     "$(host_command_path make)" --no-print-directory -j3 -C "${target}" verify \
     >"${output}" 2>&1; then
     status=0
@@ -1004,6 +1029,7 @@ FAKE
   fi
   expected=$'check\nprove-gates\nverify-runtime'
   [[ "$(run_host_command cat -- "${record}")" == "${expected}" ]]
+  [[ "$(run_host_command cat -- "${recovery_marker}")" == go ]]
   [[ ! -e "${lock}" && ! -L "${lock}" &&
     ! -e "${marker}" && ! -L "${marker}" ]]
   printf 'PASS  make-serial   hostile MAKE ignored; verify retained canonical order\n'

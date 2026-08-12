@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestPackAndVerifyRecoveryCapsule(t *testing.T) {
+func TestRecoveryClosurePackAndVerifyRecoveryCapsule(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	capsule := filepath.Join(t.TempDir(), "capsule")
 	if err := packTestCapsule(t, repository, capsule); err != nil {
@@ -25,7 +25,7 @@ func TestPackAndVerifyRecoveryCapsule(t *testing.T) {
 	}
 }
 
-func TestPackContainsFullHeadHistory(t *testing.T) {
+func TestRecoveryClosurePackContainsFullHeadHistory(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	capsule := filepath.Join(t.TempDir(), "capsule")
 	if err := packTestCapsule(t, repository, capsule); err != nil {
@@ -42,7 +42,7 @@ func TestPackContainsFullHeadHistory(t *testing.T) {
 	}
 }
 
-func TestRepeatedPackIsByteStable(t *testing.T) {
+func TestRecoveryClosureRepeatedPackIsByteStable(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	root := t.TempDir()
 	first := filepath.Join(root, "first")
@@ -68,7 +68,7 @@ func TestRepeatedPackIsByteStable(t *testing.T) {
 	}
 }
 
-func TestPackRejectsDirtyTrackedAndUntrackedState(t *testing.T) {
+func TestRecoveryClosurePackRejectsDirtyTrackedAndUntrackedState(t *testing.T) {
 	for _, scenario := range []struct {
 		name string
 		path string
@@ -85,7 +85,7 @@ func TestPackRejectsDirtyTrackedAndUntrackedState(t *testing.T) {
 	}
 }
 
-func TestPackRejectsRepositoryConfiguredFalseCleanState(t *testing.T) {
+func TestRecoveryClosurePackRejectsRepositoryConfiguredFalseCleanState(t *testing.T) {
 	t.Run("file-mode", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		runner := testGitRunner(t, repository)
@@ -162,7 +162,7 @@ func TestPackRejectsRepositoryConfiguredFalseCleanState(t *testing.T) {
 	})
 }
 
-func TestPackRejectsConfiguredFilterWithoutExecutingIt(t *testing.T) {
+func TestRecoveryClosurePackRejectsConfiguredFilterWithoutExecutingIt(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	runner := testGitRunner(t, repository)
 	attributes := filepath.Join(repository, ".gitattributes")
@@ -185,7 +185,7 @@ func TestPackRejectsConfiguredFilterWithoutExecutingIt(t *testing.T) {
 	}
 }
 
-func TestPackRejectsInfoExcludeHiddenUntrackedFile(t *testing.T) {
+func TestRecoveryClosurePackRejectsInfoExcludeHiddenUntrackedFile(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	runner := testGitRunner(t, repository)
 	exclude := strings.TrimSpace(string(mustGit(t, runner, repository,
@@ -201,7 +201,7 @@ func TestPackRejectsInfoExcludeHiddenUntrackedFile(t *testing.T) {
 	assertPackRejectsWithoutOutput(t, repository, "worktree or index is not clean")
 }
 
-func TestPackRejectsTrackedHardlinkAliasInPlatformState(t *testing.T) {
+func TestRecoveryClosurePackRejectsTrackedHardlinkAliasInPlatformState(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	platform := filepath.Join(repository, ".platform")
 	if err := os.Mkdir(platform, 0o700); err != nil {
@@ -214,7 +214,7 @@ func TestPackRejectsTrackedHardlinkAliasInPlatformState(t *testing.T) {
 	assertPackRejectsWithoutOutput(t, repository, "worktree or index is not clean")
 }
 
-func TestPackCannotMaskDirtyTrackedSymlinkWithNameSwap(t *testing.T) {
+func TestRecoveryClosurePackCannotMaskDirtyTrackedSymlinkWithNameSwap(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	runner := testGitRunner(t, repository)
 	link := filepath.Join(repository, "tracked-link")
@@ -258,7 +258,7 @@ func TestPackCannotMaskDirtyTrackedSymlinkWithNameSwap(t *testing.T) {
 	}
 }
 
-func TestPackRejectsPlatformSymlinkWithoutTouchingTarget(t *testing.T) {
+func TestRecoveryClosurePackRejectsPlatformSymlinkWithoutTouchingTarget(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	target := t.TempDir()
 	marker := filepath.Join(target, "marker")
@@ -273,7 +273,7 @@ func TestPackRejectsPlatformSymlinkWithoutTouchingTarget(t *testing.T) {
 	}
 }
 
-func TestPackRejectsRepositoryConfigIncludesWithoutExecutingFilter(t *testing.T) {
+func TestRecoveryClosurePackRejectsRepositoryConfigIncludesWithoutExecutingFilter(t *testing.T) {
 	for _, section := range []string{
 		"[include] ; trailing comment",
 		`[includeIf "gitdir:**"]`,
@@ -298,13 +298,13 @@ func TestPackRejectsRepositoryConfigIncludesWithoutExecutingFilter(t *testing.T)
 	}
 }
 
-func TestPackRejectsMalformedRepositoryConfigWithoutPanic(t *testing.T) {
+func TestRecoveryClosurePackRejectsMalformedRepositoryConfigWithoutPanic(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	appendFile(t, filepath.Join(repository, ".git", "config"), "\n= malformed\n")
 	assertPackRejectsWithoutOutput(t, repository, "repository config is malformed")
 }
 
-func TestRepositoryConfigSnapshotDetectsSameInodeRestore(t *testing.T) {
+func TestRecoveryClosureRepositoryConfigSnapshotDetectsSameInodeRestore(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	boundary, err := openRepositoryBoundary(repository)
 	if err != nil {
@@ -357,7 +357,7 @@ func TestRepositoryConfigSnapshotDetectsSameInodeRestore(t *testing.T) {
 	assertErrorContains(t, err, "config changed during capture")
 }
 
-func TestPackRejectsDangerousRepositoryMetadataAndConfiguration(t *testing.T) {
+func TestRecoveryClosurePackRejectsDangerousRepositoryMetadataAndConfiguration(t *testing.T) {
 	t.Run("object-alternates-and-command", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		runner := testGitRunner(t, repository)
@@ -393,7 +393,7 @@ func TestPackRejectsDangerousRepositoryMetadataAndConfiguration(t *testing.T) {
 	})
 }
 
-func TestPackRejectsStagedOnlyIndexChange(t *testing.T) {
+func TestRecoveryClosurePackRejectsStagedOnlyIndexChange(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	runner := testGitRunner(t, repository)
 	appendFile(t, filepath.Join(repository, "README.md"), "staged only\n")
@@ -401,7 +401,7 @@ func TestPackRejectsStagedOnlyIndexChange(t *testing.T) {
 	assertPackRejectsWithoutOutput(t, repository, "worktree or index is not clean")
 }
 
-func TestPackAndVerifySHA256Repository(t *testing.T) {
+func TestRecoveryClosurePackAndVerifySHA256Repository(t *testing.T) {
 	repository := filepath.Join(t.TempDir(), "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
 		t.Fatal(err)
@@ -422,7 +422,7 @@ func TestPackAndVerifySHA256Repository(t *testing.T) {
 	}
 }
 
-func TestPackRejectsHiddenIndexFlags(t *testing.T) {
+func TestRecoveryClosurePackRejectsHiddenIndexFlags(t *testing.T) {
 	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
 		t.Run(strings.TrimPrefix(flag, "--"), func(t *testing.T) {
 			repository := createTestRepository(t, 2)
@@ -435,7 +435,7 @@ func TestPackRejectsHiddenIndexFlags(t *testing.T) {
 	}
 }
 
-func TestPackRejectsDetachedAndShallowRepositories(t *testing.T) {
+func TestRecoveryClosurePackRejectsDetachedAndShallowRepositories(t *testing.T) {
 	t.Run("detached", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		runner := testGitRunner(t, repository)
@@ -453,7 +453,7 @@ func TestPackRejectsDetachedAndShallowRepositories(t *testing.T) {
 	})
 }
 
-func TestPackRejectsHistoryAndContentIndirection(t *testing.T) {
+func TestRecoveryClosurePackRejectsHistoryAndContentIndirection(t *testing.T) {
 	t.Run("replace-ref", func(t *testing.T) {
 		repository := createTestRepository(t, 3)
 		runner := testGitRunner(t, repository)
@@ -502,7 +502,7 @@ func TestPackRejectsHistoryAndContentIndirection(t *testing.T) {
 	})
 }
 
-func TestPackRejectsHistoricalContentIndirection(t *testing.T) {
+func TestRecoveryClosurePackRejectsHistoricalContentIndirection(t *testing.T) {
 	t.Run("submodule-gitlink", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		submodule := createTestRepository(t, 1)
@@ -547,7 +547,7 @@ func TestPackRejectsHistoricalContentIndirection(t *testing.T) {
 	})
 }
 
-func TestPackRejectsPartialCloneConfiguration(t *testing.T) {
+func TestRecoveryClosurePackRejectsPartialCloneConfiguration(t *testing.T) {
 	t.Run("configuration", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		runner := testGitRunner(t, repository)
@@ -569,13 +569,13 @@ func TestPackRejectsPartialCloneConfiguration(t *testing.T) {
 	})
 }
 
-func TestPackRejectsOutputInsideTrackedRepository(t *testing.T) {
+func TestRecoveryClosurePackRejectsOutputInsideTrackedRepository(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	err := packTestCapsule(t, repository, filepath.Join(repository, "recovery-capsule"))
 	assertErrorContains(t, err, "output inside repository must be under .platform")
 }
 
-func TestProjectStateGitShadowIsNeverExecuted(t *testing.T) {
+func TestRecoveryClosureProjectStateGitShadowIsNeverExecuted(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	admittedGit := testGitExecutable(t)
 	runner := testGitRunner(t, repository)
@@ -611,19 +611,19 @@ func TestProjectStateGitShadowIsNeverExecuted(t *testing.T) {
 	}
 }
 
-func TestPackRequiresExplicitAdmittedGit(t *testing.T) {
+func TestRecoveryClosurePackRequiresExplicitAdmittedGit(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	err := packCapsuleWithGit(repository, filepath.Join(t.TempDir(), "capsule"), "")
 	assertErrorContains(t, err, "admitted absolute Git executable is required")
 }
 
-func TestPackRejectsRelativeGitExecutable(t *testing.T) {
+func TestRecoveryClosurePackRejectsRelativeGitExecutable(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	err := packCapsuleWithGit(repository, filepath.Join(t.TempDir(), "capsule"), "git")
 	assertErrorContains(t, err, "must be absolute")
 }
 
-func TestAmbientGitSelectorsNeverRedirectSource(t *testing.T) {
+func TestRecoveryClosureAmbientGitSelectorsNeverRedirectSource(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	other := createTestRepository(t, 1)
 	runner := testGitRunner(t, repository)
@@ -650,7 +650,7 @@ func TestAmbientGitSelectorsNeverRedirectSource(t *testing.T) {
 	}
 }
 
-func TestHostileTempEnvironmentNeverReceivesRecoveryState(t *testing.T) {
+func TestRecoveryClosureHostileTempEnvironmentNeverReceivesRecoveryState(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	runner := testGitRunner(t, repository)
 	exclude := strings.TrimSpace(string(mustGit(t, runner, repository,
@@ -689,7 +689,7 @@ func TestHostileTempEnvironmentNeverReceivesRecoveryState(t *testing.T) {
 	}
 }
 
-func TestGitRunnerRejectsAndReapsStubbornEarlyExitDescendant(t *testing.T) {
+func TestRecoveryClosureGitRunnerRejectsAndReapsStubbornEarlyExitDescendant(t *testing.T) {
 	proxy, pidPath := configureStubbornEarlyExitProxy(t)
 	runner, cleanup, err := newGitRunner(t.TempDir(), proxy)
 	if err != nil {
@@ -709,7 +709,7 @@ func TestGitRunnerRejectsAndReapsStubbornEarlyExitDescendant(t *testing.T) {
 	assertRecordedProcessAbsent(t, pidPath)
 }
 
-func TestFailureCleanupReapsStubbornEarlyExitGroup(t *testing.T) {
+func TestRecoveryClosureFailureCleanupReapsStubbornEarlyExitGroup(t *testing.T) {
 	proxy, pidPath := configureStubbornEarlyExitProxy(t)
 	command := exec.Command(proxy)
 	command.Env = os.Environ()
@@ -747,7 +747,7 @@ func TestFailureCleanupReapsStubbornEarlyExitGroup(t *testing.T) {
 	assertRecordedProcessAbsent(t, pidPath)
 }
 
-func TestProcessStatESRCHIsTransientAbsence(t *testing.T) {
+func TestRecoveryFastProcessStatESRCHIsTransientAbsence(t *testing.T) {
 	err := &os.PathError{
 		Op:   "read",
 		Path: "/proc/4242/stat",
@@ -758,7 +758,7 @@ func TestProcessStatESRCHIsTransientAbsence(t *testing.T) {
 	}
 }
 
-func TestProcessStatAllowsUnrelatedNegativeNamespaceGroup(t *testing.T) {
+func TestRecoveryFastProcessStatAllowsUnrelatedNegativeNamespaceGroup(t *testing.T) {
 	payload := []byte("4242 (nested process) R 1 -1" + strings.Repeat(" 0", 16) + " 100\n")
 	snapshot, err := parseProcessSnapshot(4242, payload)
 	if err != nil {
@@ -769,7 +769,7 @@ func TestProcessStatAllowsUnrelatedNegativeNamespaceGroup(t *testing.T) {
 	}
 }
 
-func TestInitialProcessGroupCaptureRetriesTransientAbsence(t *testing.T) {
+func TestRecoveryFastInitialProcessGroupCaptureRetriesTransientAbsence(t *testing.T) {
 	calls := 0
 	group, err := captureOwnedProcessGroupWithInspector(4242,
 		func(pid int) (processSnapshot, bool, error) {
@@ -789,7 +789,7 @@ func TestInitialProcessGroupCaptureRetriesTransientAbsence(t *testing.T) {
 	}
 }
 
-func TestLiveMemberScanKeepsAlreadyValidatedLeader(t *testing.T) {
+func TestRecoveryFastLiveMemberScanKeepsAlreadyValidatedLeader(t *testing.T) {
 	listedExcludedPID := 0
 	group := ownedProcessGroup{
 		leader: processIdentity{PID: 4242, Group: 4242, Starttime: 100},
@@ -812,7 +812,7 @@ func TestLiveMemberScanKeepsAlreadyValidatedLeader(t *testing.T) {
 	}
 }
 
-func TestTerminalLeaderRecoversFromTransientAbsence(t *testing.T) {
+func TestRecoveryFastTerminalLeaderRecoversFromTransientAbsence(t *testing.T) {
 	calls := 0
 	signals := 0
 	same := processSnapshot{PID: 4242, Group: 4242, Starttime: 100, State: 'Z'}
@@ -841,7 +841,7 @@ func TestTerminalLeaderRecoversFromTransientAbsence(t *testing.T) {
 	}
 }
 
-func TestAbsentLeaderIsNeverSignaled(t *testing.T) {
+func TestRecoveryFastAbsentLeaderIsNeverSignaled(t *testing.T) {
 	signals := 0
 	group := ownedProcessGroup{
 		leader: processIdentity{PID: 4242, Group: 4242, Starttime: 100},
@@ -871,7 +871,7 @@ func configureStubbornEarlyExitProxy(t *testing.T) (string, string) {
 	}
 	script := "#!/bin/sh\nset -eu\n" +
 		"\"$RECOVERY_HELPER_EXECUTABLE\" " +
-		"-test.run='^TestRecoveryStubbornProcessHelper$' " +
+		"-test.run='^TestRecoveryClosureStubbornProcessHelper$' " +
 		"</dev/null >/dev/null 2>&1 &\n" +
 		"child=$!\n" +
 		"while [ ! -f \"$RECOVERY_HELPER_READY\" ]; do\n" +
@@ -900,7 +900,7 @@ func configureOversizedBundleProxy(t *testing.T) string {
 		"case \" $* \" in\n" +
 		"  *' bundle create - '*)\n" +
 		"    exec \"$RECOVERY_HELPER_EXECUTABLE\" " +
-		"-test.run='^TestRecoveryOversizedBundleHelper$'\n" +
+		"-test.run='^TestRecoveryClosureOversizedBundleHelper$'\n" +
 		"    ;;\n" +
 		"  *) exec \"$RECOVERY_REAL_GIT\" \"$@\" ;;\n" +
 		"esac\n"
@@ -937,7 +937,7 @@ func assertRecordedProcessAbsent(t *testing.T, pidPath string) {
 	}
 }
 
-func TestReplacedProcessGroupIdentityIsNeverSignaled(t *testing.T) {
+func TestRecoveryFastReplacedProcessGroupIdentityIsNeverSignaled(t *testing.T) {
 	signals := 0
 	group := ownedProcessGroup{
 		leader: processIdentity{PID: 4242, Group: 4242, Starttime: 100},
@@ -961,7 +961,7 @@ func TestReplacedProcessGroupIdentityIsNeverSignaled(t *testing.T) {
 	}
 }
 
-func TestFinishIdentityReplacementUsesOnlyBoundedAbandonment(t *testing.T) {
+func TestRecoveryFastFinishIdentityReplacementUsesOnlyBoundedAbandonment(t *testing.T) {
 	groupSignals := 0
 	abandonments := 0
 	runner := &gitRunner{
@@ -997,7 +997,7 @@ func TestFinishIdentityReplacementUsesOnlyBoundedAbandonment(t *testing.T) {
 	}
 }
 
-func TestRecoveryStubbornProcessHelper(t *testing.T) {
+func TestRecoveryClosureStubbornProcessHelper(t *testing.T) {
 	if os.Getenv("RECOVERY_PROCESS_HELPER") != "stubborn" {
 		return
 	}
@@ -1016,7 +1016,7 @@ func TestRecoveryStubbornProcessHelper(t *testing.T) {
 	os.Exit(84)
 }
 
-func TestRecoveryOversizedBundleHelper(t *testing.T) {
+func TestRecoveryClosureOversizedBundleHelper(t *testing.T) {
 	if os.Getenv("RECOVERY_PROCESS_HELPER") != "bundle-overflow" {
 		return
 	}
@@ -1036,7 +1036,7 @@ func TestRecoveryOversizedBundleHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestRepositoryConfiguredFSMonitorIsNeverExecuted(t *testing.T) {
+func TestRecoveryClosureRepositoryConfiguredFSMonitorIsNeverExecuted(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	marker := filepath.Join(t.TempDir(), "fsmonitor-executed")
 	hook := filepath.Join(t.TempDir(), "fsmonitor")
@@ -1054,7 +1054,7 @@ func TestRepositoryConfiguredFSMonitorIsNeverExecuted(t *testing.T) {
 	}
 }
 
-func TestPackRejectsSourceChangeDuringCapture(t *testing.T) {
+func TestRecoveryClosurePackRejectsSourceChangeDuringCapture(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	marker := filepath.Join(t.TempDir(), "source-mutated")
 	proxy := filepath.Join(t.TempDir(), "git")
@@ -1080,7 +1080,7 @@ func TestPackRejectsSourceChangeDuringCapture(t *testing.T) {
 	assertErrorContains(t, err, "source repository changed during capture")
 }
 
-func TestPackRefusesExistingOutput(t *testing.T) {
+func TestRecoveryClosurePackRefusesExistingOutput(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	capsule := filepath.Join(t.TempDir(), "capsule")
 	if err := os.Mkdir(capsule, 0o700); err != nil {
@@ -1090,7 +1090,7 @@ func TestPackRefusesExistingOutput(t *testing.T) {
 	assertErrorContains(t, err, "output path already exists")
 }
 
-func TestPackNeverReplacesDestinationCreatedAtPublish(t *testing.T) {
+func TestRecoveryClosurePackNeverReplacesDestinationCreatedAtPublish(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	for _, scenario := range []struct {
 		name   string
@@ -1160,7 +1160,7 @@ func TestPackNeverReplacesDestinationCreatedAtPublish(t *testing.T) {
 	}
 }
 
-func TestPackRevalidatesSourceAndStageAfterPublishBarrier(t *testing.T) {
+func TestRecoveryClosurePackRevalidatesSourceAndStageAfterPublishBarrier(t *testing.T) {
 	t.Run("source", func(t *testing.T) {
 		repository := createTestRepository(t, 2)
 		parent := t.TempDir()
@@ -1199,7 +1199,7 @@ func TestPackRevalidatesSourceAndStageAfterPublishBarrier(t *testing.T) {
 	})
 }
 
-func TestPackNeverPublishesStageNameReplacement(t *testing.T) {
+func TestRecoveryClosurePackNeverPublishesStageNameReplacement(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	parent := t.TempDir()
 	output := filepath.Join(parent, "capsule")
@@ -1237,7 +1237,7 @@ func TestPackNeverPublishesStageNameReplacement(t *testing.T) {
 	}
 }
 
-func TestPackRejectsOutputParentPathSwap(t *testing.T) {
+func TestRecoveryClosurePackRejectsOutputParentPathSwap(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	root := t.TempDir()
 	parent := filepath.Join(root, "output-parent")
@@ -1303,7 +1303,7 @@ func assertDestinationParentEmpty(t *testing.T, parent, output string) {
 	}
 }
 
-func TestPackStageNameSwapNeverWritesReplacementDirectory(t *testing.T) {
+func TestRecoveryClosurePackStageNameSwapNeverWritesReplacementDirectory(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	parent := t.TempDir()
 	capsule := filepath.Join(parent, "capsule")
@@ -1365,7 +1365,7 @@ func TestPackStageNameSwapNeverWritesReplacementDirectory(t *testing.T) {
 	}
 }
 
-func TestPackWorksWithDestinationSiblingOfRepository(t *testing.T) {
+func TestRecoveryClosurePackWorksWithDestinationSiblingOfRepository(t *testing.T) {
 	original := createTestRepository(t, 2)
 	parent := t.TempDir()
 	repository := filepath.Join(parent, "repository")
@@ -1381,7 +1381,7 @@ func TestPackWorksWithDestinationSiblingOfRepository(t *testing.T) {
 	}
 }
 
-func TestPackRejectsWholeRepositoryPathSwap(t *testing.T) {
+func TestRecoveryClosurePackRejectsWholeRepositoryPathSwap(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	parked := repository + "-parked"
 	marker := filepath.Join(repository, "victim-marker")
@@ -1422,7 +1422,7 @@ func TestPackRejectsWholeRepositoryPathSwap(t *testing.T) {
 	}
 }
 
-func TestPackCapsBundleStreamBeforeWritingPastLimit(t *testing.T) {
+func TestRecoveryClosurePackCapsBundleStreamBeforeWritingPastLimit(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	proxy := configureOversizedBundleProxy(t)
 	parent := t.TempDir()
@@ -1471,7 +1471,7 @@ func TestPackCapsBundleStreamBeforeWritingPastLimit(t *testing.T) {
 	}
 }
 
-func TestDrainingCappedWriterReportsAndDiscardsOverflow(t *testing.T) {
+func TestRecoveryFastDrainingCappedWriterReportsAndDiscardsOverflow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bundle")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -1497,7 +1497,7 @@ func TestDrainingCappedWriterReportsAndDiscardsOverflow(t *testing.T) {
 	}
 }
 
-func TestPinnedTempCleanupNeverDeletesReplacementPath(t *testing.T) {
+func TestRecoveryClosurePinnedTempCleanupNeverDeletesReplacementPath(t *testing.T) {
 	temporary, err := newPinnedTempDirectory("flare-recovery-cleanup-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -1649,7 +1649,7 @@ func pinnedTempRegularSwapScenario() pinnedTempEntrySwapScenario {
 	}
 }
 
-func TestPinnedTempCleanupNeverDeletesReplacementEntries(t *testing.T) {
+func TestRecoveryClosurePinnedTempCleanupNeverDeletesReplacementEntries(t *testing.T) {
 	for _, scenario := range pinnedTempEntrySwapScenarios() {
 		t.Run(scenario.name, func(t *testing.T) {
 			runPinnedTempEntrySwapScenario(t, scenario)
@@ -1684,7 +1684,7 @@ func runPinnedTempEntrySwapScenario(t *testing.T, scenario pinnedTempEntrySwapSc
 	}
 }
 
-func TestPinnedTempRegisteredNamePreservesReplacementAndScrubsMovedOriginal(t *testing.T) {
+func TestRecoveryClosurePinnedTempRegisteredNamePreservesReplacementAndScrubsMovedOriginal(t *testing.T) {
 	temporary, err := newPinnedTempDirectory("flare-recovery-registered-name-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -1727,7 +1727,7 @@ func TestPinnedTempRegisteredNamePreservesReplacementAndScrubsMovedOriginal(t *t
 	}
 }
 
-func TestPackFailsWhenGitHomeCleanupNameIsReplaced(t *testing.T) {
+func TestRecoveryClosurePackFailsWhenGitHomeCleanupNameIsReplaced(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	parent := t.TempDir()
 	output := filepath.Join(parent, "capsule")

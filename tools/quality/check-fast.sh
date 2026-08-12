@@ -22,7 +22,9 @@ check_go_tools() {
     (
       cd "${PLATFORM_ROOT}/${module}"
       if [[ "${module}" == tools/recovery/capsule ]]; then
-        RECOVERY_TEST_GIT="${git_path}" run_managed_tool go test ./...
+        RECOVERY_TEST_GIT="${git_path}" \
+          RECOVERY_TEST_CLASS_SENTINEL=reject \
+          run_managed_tool go test -count=1 -run '^TestRecoveryFast' ./...
       else
         run_managed_tool go test ./...
       fi

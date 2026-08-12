@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestVerifyRejectsTamperAndUnexpectedFiles(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsTamperAndUnexpectedFiles(t *testing.T) {
 	t.Run("tampered-bundle", func(t *testing.T) {
 		capsule := createTestCapsule(t)
 		appendFile(t, filepath.Join(capsule, "repository.bundle"), "tamper")
@@ -22,7 +22,7 @@ func TestVerifyRejectsTamperAndUnexpectedFiles(t *testing.T) {
 	})
 }
 
-func TestVerifyRejectsBundleWithoutExplicitHEAD(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsBundleWithoutExplicitHEAD(t *testing.T) {
 	repository := createTestRepository(t, 3)
 	capsule := filepath.Join(t.TempDir(), "capsule")
 	if err := packTestCapsule(t, repository, capsule); err != nil {
@@ -39,7 +39,7 @@ func TestVerifyRejectsBundleWithoutExplicitHEAD(t *testing.T) {
 	assertErrorContains(t, err, "bundle refs are not exact")
 }
 
-func TestVerifyRejectsIdentityMismatch(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsIdentityMismatch(t *testing.T) {
 	capsule := createTestCapsule(t)
 	identityPath := filepath.Join(capsule, "RECOVERY.json")
 	identity, err := readRecoveryIdentity(identityPath)
@@ -58,7 +58,7 @@ func TestVerifyRejectsIdentityMismatch(t *testing.T) {
 	assertErrorContains(t, err, "bundle HEAD or branch ref")
 }
 
-func TestVerifyRejectsInvalidRecordedBranch(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsInvalidRecordedBranch(t *testing.T) {
 	capsule := createTestCapsule(t)
 	identityPath := filepath.Join(capsule, "RECOVERY.json")
 	identity, err := readRecoveryIdentity(identityPath)
@@ -77,7 +77,7 @@ func TestVerifyRejectsInvalidRecordedBranch(t *testing.T) {
 	assertErrorContains(t, err, "branch name is invalid")
 }
 
-func TestVerifyRejectsShallowBundleThatGitBundleVerifyAccepts(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsShallowBundleThatGitBundleVerifyAccepts(t *testing.T) {
 	origin := createTestRepository(t, 3)
 	shallow := filepath.Join(t.TempDir(), "shallow")
 	runner := testGitRunner(t, origin)
@@ -111,7 +111,7 @@ func TestVerifyRejectsShallowBundleThatGitBundleVerifyAccepts(t *testing.T) {
 	assertErrorContains(t, err, "direct recovery clone failed")
 }
 
-func TestVerifyRejectsCapsuleRootSymlink(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsCapsuleRootSymlink(t *testing.T) {
 	capsule := createTestCapsule(t)
 	link := filepath.Join(t.TempDir(), "capsule-link")
 	if err := os.Symlink(capsule, link); err != nil {
@@ -121,7 +121,7 @@ func TestVerifyRejectsCapsuleRootSymlink(t *testing.T) {
 	assertErrorContains(t, err, "capsule root must not be a symlink")
 }
 
-func TestVerifyRejectsMemberNameSwapDuringSnapshot(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsMemberNameSwapDuringSnapshot(t *testing.T) {
 	capsule := createTestCapsule(t)
 	bundle := filepath.Join(capsule, "repository.bundle")
 	payload, err := os.ReadFile(bundle)
@@ -153,7 +153,7 @@ func TestVerifyRejectsMemberNameSwapDuringSnapshot(t *testing.T) {
 	assertErrorContains(t, err, "changed during snapshot")
 }
 
-func TestVerifyWorksFromSpecialCharacterPath(t *testing.T) {
+func TestRecoveryClosureVerifyWorksFromSpecialCharacterPath(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	capsule := filepath.Join(t.TempDir(), "capsule #[]&")
 	if err := packTestCapsule(t, repository, capsule); err != nil {
@@ -164,7 +164,7 @@ func TestVerifyWorksFromSpecialCharacterPath(t *testing.T) {
 	}
 }
 
-func TestVerifyCloneNameSwapNeverTouchesReplacement(t *testing.T) {
+func TestRecoveryClosureVerifyCloneNameSwapNeverTouchesReplacement(t *testing.T) {
 	capsule := createTestCapsule(t)
 	originalBarrier := recoveryFilesystemBarrier
 	defer func() { recoveryFilesystemBarrier = originalBarrier }()
@@ -211,7 +211,7 @@ func TestVerifyCloneNameSwapNeverTouchesReplacement(t *testing.T) {
 	}
 }
 
-func TestVerifyRejectsOversizedRecoveredFileBeforeCheckout(t *testing.T) {
+func TestRecoveryClosureVerifyRejectsOversizedRecoveredFileBeforeCheckout(t *testing.T) {
 	repository := createTestRepository(t, 2)
 	large := filepath.Join(repository, "oversized.bin")
 	file, err := os.OpenFile(large, os.O_CREATE|os.O_WRONLY, 0o600)
