@@ -386,6 +386,8 @@ prove_policycheck_red() {
 }
 
 prove_local_gates() {
+  local recovery_git
+  recovery_git="$(host_command_path git)"
   "${PLATFORM_ROOT}/tools/bootstrap/prove-environment.sh"
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
@@ -413,6 +415,10 @@ prove_local_gates() {
   prove_unlocked_ci
   "${PLATFORM_ROOT}/tools/bootstrap/prove-tool-lock.sh"
   "${PLATFORM_ROOT}/tools/common/prove-managed-tools.sh"
+  (
+    builtin cd -- "${PLATFORM_ROOT}/tools/recovery/capsule"
+    RECOVERY_TEST_GIT="${recovery_git}" run_managed_tool go test -count=1 ./...
+  )
   prove_kube_context_guard
   "${PLATFORM_ROOT}/tools/kubernetes/prove-safety.sh"
   "${PLATFORM_ROOT}/tests/fixtures/kubernetes/lifecycle-concurrency-matrix.sh"

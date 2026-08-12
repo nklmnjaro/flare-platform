@@ -14,12 +14,18 @@ collect_shell_files() {
 }
 
 check_go_tools() {
+  local git_path
   local module
+  git_path="$(host_command_path git)"
   for module in tools/artifacts/archive tools/evidence/sanitize \
-    tools/quality/policycheck kubernetes/reference/server; do
+    tools/quality/policycheck tools/recovery/capsule kubernetes/reference/server; do
     (
       cd "${PLATFORM_ROOT}/${module}"
-      run_managed_tool go test ./...
+      if [[ "${module}" == tools/recovery/capsule ]]; then
+        RECOVERY_TEST_GIT="${git_path}" run_managed_tool go test ./...
+      else
+        run_managed_tool go test ./...
+      fi
     )
   done
 }

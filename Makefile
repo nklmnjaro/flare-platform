@@ -6,6 +6,7 @@ unexport BASH_ENV ENV MAKEFILES MFLAGS GNUMAKEFLAGS
 .PHONY: help doctor environment-evidence bootstrap tool-lock hooks check-fast check
 .PHONY: prove-local prove-environment prove-gates verify
 .PHONY: prove-integrity prove-diagnostics artifact-pack artifact-verify diagnose verify-runtime
+.PHONY: recovery-pack recovery-verify prove-recovery
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
@@ -24,6 +25,9 @@ help:
 	  'prove-diagnostics prove fresh and private diagnostic evidence' \
 	  'artifact-pack  create deterministic review artifact' \
 	  'artifact-verify verify review artifact and manifest' \
+	  'recovery-pack  capture clean committed repository state' \
+	  'recovery-verify restore and verify a recovery capsule' \
+	  'prove-recovery prove repository recovery failures closed' \
 	  'diagnose       collect bounded local diagnostics' \
 	  'verify-runtime verify disposable Kubernetes runtime' \
 	  'verify         full static + disposable kind verification' \
@@ -95,6 +99,49 @@ artifact-verify:
 	  cd -- tools/artifacts/archive; \
 	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . verify \
 	    --archive "$${archive_path}"
+
+recovery-pack:
+	@set -euo pipefail; \
+	  output_path="$${OUTPUT:-}"; \
+	  [[ -n "$${output_path}" ]] || { \
+	    printf 'OUTPUT is required\n' >&2; \
+	    exit 2; \
+	  }; \
+	  invocation_root="$$(pwd -P)"; \
+	  builtin source "$(CURDIR)/tools/common/env.sh"; \
+	  [[ "$${output_path}" == /* ]] || \
+	    output_path="$${invocation_root}/$${output_path}"; \
+	  if [[ "$${output_path}" == "$${PLATFORM_STATE_DIR}/recovery/"* ]]; then \
+	    ensure_state_directory recovery; \
+	  fi; \
+	  git_path="$$(host_command_path git)"; \
+	  builtin cd -- "$(CURDIR)/tools/recovery/capsule"; \
+	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . pack \
+	    --repository "$(CURDIR)" --output "$${output_path}" --git "$${git_path}"
+
+recovery-verify:
+	@set -euo pipefail; \
+	  capsule_path="$${CAPSULE:-}"; \
+	  [[ -n "$${capsule_path}" ]] || { \
+	    printf 'CAPSULE is required\n' >&2; \
+	    exit 2; \
+	  }; \
+	  invocation_root="$$(pwd -P)"; \
+	  builtin source "$(CURDIR)/tools/common/env.sh"; \
+	  [[ "$${capsule_path}" == /* ]] || \
+	    capsule_path="$${invocation_root}/$${capsule_path}"; \
+	  git_path="$$(host_command_path git)"; \
+	  builtin cd -- "$(CURDIR)/tools/recovery/capsule"; \
+	  "$(CURDIR)/tools/common/run-managed-tool.sh" go run . verify \
+	    --capsule "$${capsule_path}" --git "$${git_path}"
+
+prove-recovery:
+	@set -euo pipefail; \
+	  builtin source "$(CURDIR)/tools/common/env.sh"; \
+	  git_path="$$(host_command_path git)"; \
+	  builtin cd -- "$(CURDIR)/tools/recovery/capsule"; \
+	  RECOVERY_TEST_GIT="$${git_path}" \
+	    "$(CURDIR)/tools/common/run-managed-tool.sh" go test -count=1 ./...
 
 verify:
 	@tools/quality/check.sh
