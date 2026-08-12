@@ -38,6 +38,13 @@ tree=<exact source tree>
 same run ID. Treat those records, the internal manifest, and detached checksum
 as one evidence identity.
 
+Each tool record is `missing`, `version-unavailable`, or `present | <identity>`.
+The last form requires successful admission, version-command exit zero,
+sanitizer exit zero, exact untruncated framing, and one nonempty bounded first
+logical line. Multiline output is drained after that line. A failed or timed-out
+producer, sanitizer failure, empty output, truncation, or malformed/extra frame
+is reported only as `version-unavailable`; its payload is not tool identity.
+
 Live Kubernetes output may change across captures. Do not compare two live ZIP
 hashes as a health gate. Verify each capture's structure, manifest, run identity,
 freshness, bounds, and internal consistency. Byte equality remains required for
@@ -45,11 +52,20 @@ the repository's controlled synthetic determinism fixtures.
 
 ## Privacy and Kubernetes scope
 
-External bytes are sanitized before their first durable write. The supported
-grammar removes supported keyed authorization/password/secret/token values,
-supported workstation paths, ANSI controls, NUL, invalid UTF-8, and other
-unsupported control bytes. Logical lines and the complete durable payload are
-bounded.
+External bytes are sanitized before their first durable write. Case-insensitive
+assignment/header keys containing `authorization`, `password`, `secret`, or
+`token`, and separated flags containing `password`, `secret`, or `token`, are
+supported. An ordinary unquoted value becomes `<redacted>` through its first
+whitespace or `,;}]&` boundary. A keyed or flagged unquoted `Bearer`/`Basic`
+compound becomes `<scheme> <redacted>` and retains later safe context. A quoted
+value becomes quoted `<redacted>`, preserving readable JSON-like delimiters.
+Supported workstation paths, ANSI controls, NUL, invalid UTF-8, and other
+unsupported control bytes are also removed. Logical lines and the complete
+durable payload are bounded, and producer input continues to be drained.
+
+Unknown unkeyed bearer/basic strings, arbitrary encodings, binary attachments,
+entropy-based secrets, and product-specific formats are prohibited input. The
+sanitizer does not silently claim them as covered.
 
 This is a narrow Platform fixture contract, not generic DLP. Never feed it
 credentials, kubeconfig, arbitrary binary data, Flare customer payloads, or
@@ -89,7 +105,29 @@ Run the exact intentional RED proof with:
 make prove-diagnostics
 ```
 
-The proof covers stale-pair invalidation, pre-write sanitization, bounds,
-controls, supported path and secret canaries, ownership-before-read, partial
-failure cleanup, and synthetic determinism. See
+The proof covers stale-pair invalidation, pre-write sanitization, the supported
+simple and compound credential grammar, absence of canaries from all durable
+surfaces, bounds, controls, ownership-before-read, partial failure cleanup, and
+synthetic determinism. Tool-identity RED cases cover producer status `42`,
+timeout, sanitizer failure, empty success, malformed/extra framing, successful
+multiline draining, and oversized bounded draining. See
 `docs/contracts/platform-diagnostics-v2.md` for the normative contract.
+
+Special-root coverage is literal rather than pattern-based. Under a
+`source [x] #[]&` fixture, `.git` and `.platform` mutations must leave the source
+digest unchanged, while a tracked-file mutation must change it. A pre-fix direct
+clean clone reached step 6 and returned status `2` from
+`make prove-diagnostics` after `91s`: the immediate failure was a proof assertion
+whose full-root `find ! -path` operand misclassified its existing sentinel.
+Investigation also found full-root `find -path` operands in the production source
+snapshot. The proof now scopes sentinel checks to one synthetic directory;
+production changes directory to the admitted source root and prunes literal
+`./.git` and `./.platform` entries. The focused privacy proof retained 17 positive PASS
+records, including the selective snapshot assertion.
+
+The integrated implementation replay before the final documentation amendment
+on `72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5` retained
+`make prove-diagnostics` at `39s`, two fresh `make diagnose` runs at `42s` and
+`41s`, and artifact verifications at `0s` then `1s`. This is integrated evidence,
+not promotion: the exact clean-clone replay of the final docs-bearing candidate
+is still pending.

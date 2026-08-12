@@ -1,6 +1,10 @@
 # Platform diagnostics contract v2
 
-Status: integrated candidate; final live and clean-clone replay is required.
+Status: Task 008R1 integrated implementation replay passed before the final
+documentation amendment on commit
+`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`, tree
+`27544de541b12500c40526a391dbc906a28d492b`; final docs-bearing candidate
+clean-clone replay is required.
 
 ## Purpose
 
@@ -63,8 +67,21 @@ the directory to be absent or empty. No other raw entry is packageable.
 `HEAD`, source tree, branch, dirty-entry count, OS, architecture, the fixed
 privacy declaration, then one record for each of `go`, `docker`, `kind`,
 `kubectl`, `shellcheck`, `shfmt`, `actionlint`, `zizmor`, `hadolint`, `trivy`,
-`kubeconform`, and `kube-linter`. A tool record is exactly `missing` or
-`present | <nonempty sanitized first line>`.
+`kubeconform`, and `kube-linter`. A tool record has exactly one of these forms:
+
+```text
+tool.<name>=missing
+tool.<name>=version-unavailable
+tool.<name>=present | <identity>
+```
+
+`missing` means tool admission did not succeed. `present` requires successful
+admission, exit zero from the exact bounded version command, sanitizer exit
+zero, exact framing with `sanitizer_truncated=false`, and one nonempty bounded
+sanitized first logical line. Single-line mode emits only that line but drains
+the rest of producer output. Timeout, nonzero producer status, sanitizer
+failure, truncation, empty output, or malformed/extra framing maps to the one
+fixed `version-unavailable` value; failure payload is never a valid identity.
 
 `kubernetes-status.txt` has exactly one of these records:
 
@@ -88,8 +105,10 @@ executable dependency set, including the sanitizer and archive modules, to
 match `HEAD`; tracked edits plus untracked or ignored executable source are
 rejected. It then takes two equal bounded snapshots over source `HEAD`, tree,
 branch, porcelain status, index, and worktree content and modes. The worktree
-snapshot excludes `.git` and `.platform` and accepts at most 20,000 entries,
-1 MiB of path bytes, 64 MiB per file, and 256 MiB in total.
+snapshot runs relative to the admitted physical source root and prunes the
+literal relative entries `./.git` and `./.platform`; metacharacters in the
+absolute root never enter `find` path matching. The snapshot accepts at most
+20,000 entries, 1 MiB of path bytes, 64 MiB per file, and 256 MiB in total.
 
 Those internal status, index, and worktree digests are rechecked before private
 snapshotting, immediately before pair publication, and after pair publication.
@@ -131,11 +150,26 @@ The sanitizer:
 The sanitizer additionally caps every logical input line at 64 KiB. The file
 and aggregate limits above include the metadata added after sanitization.
 
-Quoted supported values retain their delimiters around `<redacted>` when that
-keeps JSON-like output readable. The grammar is deliberately narrow. It does
-not claim coverage for unkeyed bearer strings, arbitrary encodings, binary
-attachments, entropy-based secrets, or unknown product-specific formats. Those
-inputs remain prohibited.
+For an ordinary unquoted supported value, one token is replaced by
+`<redacted>`. For an unquoted value beginning with case-insensitive `Bearer` or
+`Basic`, followed by spaces or tabs and a credential token, the scheme and later
+safe context are retained as `<scheme> <redacted>`. For a quoted value, the
+quoted value is replaced by quoted `<redacted>`. Unquoted credential boundaries
+are whitespace or `,`, `;`, `}`, `]`, and `&`; those boundaries and later safe
+context remain readable. The accepted examples are:
+
+```text
+api_token: Bearer token-canary visible -> api_token: Bearer <redacted> visible
+password: Basic password-canary visible -> password: Basic <redacted> visible
+--access-token Bearer flag-canary -> --access-token Bearer <redacted>
+{"client_secret":"Basic json-canary"} -> {"client_secret":"<redacted>"}
+Authorization: Bearer authorization-canary -> Authorization: Bearer <redacted>
+```
+
+The grammar is deliberately narrow. It does not claim coverage for unkeyed
+bearer/basic strings, arbitrary encodings, binary attachments, entropy-based
+secrets, or unknown product-specific formats. Those inputs remain prohibited;
+unknown unkeyed credential text is not silently changed or claimed as covered.
 
 Command captures retain bounded exit and truncation metadata. A Kubernetes
 authorization or query subfailure removes the whole Kubernetes payload staging
@@ -191,8 +225,16 @@ later live observation will be byte-identical.
   budget reject any noncanonical input;
 - trusted executable source differs from `HEAD` before collection, and a later
   tracked edit or untracked Go-source race leaves no current pair;
-- supported secret, path, ANSI, NUL, invalid UTF-8, and control canaries do not
-  survive a durable write while useful context remains;
+- literal state-path pruning remains selective under a source root containing
+  spaces and `#[]&`: `.git` or `.platform` mutations leave the digest unchanged,
+  while a tracked-file mutation changes it;
+- supported simple and compound keyed/flag secret, path, ANSI, NUL, invalid
+  UTF-8, and control canaries do not survive stdout, staging, final archive,
+  checksum-side metadata, failure evidence, interrupted residue, or another
+  durable write while useful context remains;
+- failed, timed-out, empty, truncated, sanitizer-failed, or malformed tool
+  identity probes cannot become `present`, while successful multiline probes
+  publish only the first logical line and are fully drained;
 - logical-line and total-payload bounds remain valid UTF-8 and record
   truncation;
 - an ownership refusal occurs before Kubernetes payload reads and leaves no

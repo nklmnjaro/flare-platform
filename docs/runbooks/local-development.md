@@ -42,14 +42,47 @@ controls, and runs on the host-only PATH. If an installed package is absent, the
 command fails; do not enable lazy installation to repair it. Run the ordinary
 checksum-enforced `make bootstrap` instead.
 
-## Fast feedback
+## Local feedback and gate ownership
 
 ```bash
-make prove-local
 make check-fast
+make prove-local
+make prove-gates
 ```
 
-Use this before commits. It avoids Kubernetes and heavyweight runtime verification.
+Use `make check-fast` before commits. It runs cheap positive static/unit checks;
+the recovery module contributes only its explicit `TestRecoveryFast` class.
+`make prove-local` runs offline-capable RED fixtures and proves the recovery
+class boundary with an active closure sentinel, but does not execute the full
+adversarial recovery suite. `make prove-gates` is the full gate proof: its Make
+prerequisite runs `make prove-recovery` once, then its script runs the local and
+external-tool RED fixtures. Direct `make prove-local` does not acquire that Make
+prerequisite.
+
+The runtime record below includes the integrated implementation replay before
+the final documentation amendment, retained for commit
+`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`. The final docs-bearing candidate's
+clean-clone replay remains pending. A measurement is a planning input, never
+permission for a silent skip, stale success cache, reduced assertion set, or
+`|| true`.
+
+| Command or class | Unique signal and recovery ownership | Retained wall time |
+| --- | --- | --- |
+| recovery fast class | deterministic unit/classification; fast recovery only | `0.027-0.029s` after R3 |
+| `make check-fast` | cheap positive source/tool checks; fast recovery only | focused `12.723s`; integrated `14s` |
+| `make prove-local` | offline RED plus active recovery class boundary; no full recovery | integrated `203s` |
+| `make prove-gates` | one full recovery prerequisite plus local/external RED | integrated `448s` |
+| `make check` | `check-fast` plus positive Hadolint, Trivy, schema, and policy targets | integrated `15s` |
+| `make prove-recovery` | sole full non-race recovery owner | integrated `237s`; old `356.296s` |
+| `make verify` | check, admitted recursive `make prove-gates`, and disposable runtime | integrated `642s`, then `659s` |
+| `make prove-recovery-race` | separate race-enabled closure lane | not in matrix; old `646.395s` |
+
+The old timings are comparison evidence, not repaired-candidate acceptance.
+The clean-clone replay must record every canonical command's measured duration
+and stay within its runner budgets without dropping a signal.
+The two pre-fix direct-clone literal-path REDs and their distinct recovery and
+diagnostics repairs are retained in the Task 008 integration evidence; neither
+failed attempt counts as clean-clone acceptance.
 
 ## Full local proof
 
@@ -57,12 +90,14 @@ Use this before commits. It avoids Kubernetes and heavyweight runtime verificati
 make verify
 ```
 
-This runs static/security checks, proves intentional RED fixtures, admits and
-freezes one external local Unix Docker target, creates a disposable kind
-cluster on that same target, runs positive and negative workloads, captures
-bounded diagnostics for the negative path, and tears the cluster down. Builds
-use the exact admitted Docker executable and endpoint with empty per-call
-Docker/Buildx configuration, `DOCKER_BUILDKIT=1`, and `--builder default`.
+This runs static/security checks, proves intentional RED fixtures, executes the
+full non-race recovery closure exactly once through the admitted recursive
+`make prove-gates`, admits and freezes one external local Unix Docker target,
+creates a disposable kind cluster on that same target, runs positive and
+negative workloads, captures bounded diagnostics for the negative path, and
+tears the cluster down. Builds use the exact admitted Docker executable and
+endpoint with empty per-call Docker/Buildx configuration,
+`DOCKER_BUILDKIT=1`, and `--builder default`.
 The outer verification command holds the shared project-and-cluster lifecycle
 lease; its nested lifecycle commands validate the inherited token and descriptor
 instead of locking again.
@@ -164,6 +199,7 @@ RED fixtures and see `docs/runbooks/diagnostics.md`.
 
 ```bash
 make prove-recovery
+make prove-recovery-race
 make recovery-pack OUTPUT=.platform/recovery/capsule
 make recovery-verify CAPSULE=.platform/recovery/capsule
 ```
@@ -191,3 +227,9 @@ committed secret. Local/uncommitted credential stores, source `.git/config`
 remotes/auth, caches, uncommitted files, Docker images, and Kubernetes state are
 not copied as separate workstation state. See
 `docs/runbooks/repository-recovery.md`.
+
+The race command is a separately named closure/maintainer lane and is not part
+of `check-fast`, `prove-local`, `prove-gates`, `check`, or ordinary `verify`.
+Run it when producing the explicit race evidence required by a closure; never
+substitute its previous success for the non-race proof owned by
+`make prove-recovery`.

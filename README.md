@@ -28,8 +28,9 @@ instead of reimplementing them.
   client-side Docker input, built locally as `FROM scratch` and loaded into `kind`.
 - Static infrastructure/security checks with intentional RED fixtures.
 - Deterministic review artifacts with checksum, canonical-byte, resource, and portable-path bounds.
-- Fresh, pre-write-sanitized Platform diagnostics with one explicit current run
-  identity and checkout-authorized Kubernetes reads.
+- Fresh, pre-write-sanitized Platform diagnostics with bounded keyed/flagged
+  `Bearer`/`Basic` credential grammar, fail-closed tool identity, one explicit
+  current run identity, and checkout-authorized Kubernetes reads.
 - Full-history repository recovery capsules that bind one clean named branch,
   commit, tree, object format, and exact three-file payload.
 - Integration contracts for Flare and Poker without cross-repository writes.
@@ -49,9 +50,17 @@ final integration baseline is commit
 `eb6d0f0c027202e78b2b5b35e18473b0079a28dc`, tree
 `95f40069a4d2776494cea35921fa55e32f9ead99`, after integrated, live
 two-checkout, bounded-concurrency, direct-clone, bundle-clone, and repeated
-runtime replay. Task 008 semantically ports diagnostics and repository recovery
-over that baseline. Its final live and clean-clone replay remains pending, so
-promotion is not claimed.
+runtime replay. Task 008 semantically ported diagnostics and repository recovery
+over that baseline. Task 008R1 repairs independently reproduced compound-secret,
+tool-identity, and recovery-gate ownership defects. Its exact 19-step integrated
+implementation replay passed before the final documentation amendment on commit
+`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`, tree
+`27544de541b12500c40526a391dbc906a28d492b`, after two direct clean-clone
+attempts exposed literal-path defects. Recovery test discovery now enumerates
+literal `_test.go` entries with `os.ReadDir`; diagnostics snapshot pruning uses
+root-relative literal `.git` and `.platform` selectors, and its sentinel checks
+are directory-scoped. The final docs-bearing candidate's clean-clone replay
+remains pending, so promotion is not claimed.
 
 ## Entry points
 
@@ -62,7 +71,9 @@ make environment-evidence
 make hooks
 make prove-diagnostics
 make prove-recovery
+make prove-recovery-race  # separately requested closure/maintainer lane
 make prove-local
+make prove-gates
 make check-fast
 make check
 make diagnose
@@ -92,6 +103,11 @@ Writers reject symlinked directory and file targets before mutation. Use
 `make diagnose` for one bounded, fresh, checksum-verifiable observation. Live
 Kubernetes archives are identified by structure, manifest, and run identity;
 changing events and timestamps mean two live ZIPs need not have equal bytes.
+An admitted diagnostic tool is reported as `present | <identity>` only when its
+bounded version command and the sanitizer both succeed, framing is exact and
+untruncated, and the sanitized first logical line is nonempty. The sanitizer
+continues draining multiline output. A failed admitted probe is reported as the
+fixed `version-unavailable`, never as a successful identity.
 See `docs/contracts/platform-diagnostics-v2.md` and
 `docs/runbooks/diagnostics.md`.
 
@@ -126,6 +142,15 @@ gitlinks, Git LFS attributes or pointer blobs anywhere in reachable history,
 object alternates/common-directory indirection, unsafe fsck configuration, and
 source races. Verification performs a direct special-path clone and full strict
 object-graph check; bundle verification alone is insufficient.
+
+Recovery tests have two explicit classes. `make check-fast` runs only bounded
+deterministic unit/contract tests. `make prove-local` proves the selector with an
+active closure RED but does not run the adversarial suite. `make prove-recovery`
+owns the full non-race process/filesystem proof; it is a prerequisite of
+`make prove-gates`. `make verify` invokes `make prove-gates` through an admitted
+recursive Make, so that full proof runs exactly once in one verification. The
+separate `make prove-recovery-race` closure/maintainer command is intentionally
+not nested in ordinary verification.
 
 Clean-source admission does not delegate physical truth to `git status` or
 repository clean/smudge configuration. It requires the exact `HEAD` tree and
@@ -200,14 +225,18 @@ and `docs/evidence/PLATFORM-RUNTIME-IDENTITY-003__20260811.md`.
 ## Gate enforcement
 
 The quality and security lanes used by `make check-fast`, `make check`,
-`make prove-gates`, and CI fail closed: a tool error, positive-target finding,
-or failed RED proof makes the canonical command non-zero. Failure propagation
-alone does not set gate maturity. Signals move to `BLOCKING` only under
-`docs/decisions/0002-quality-security-profile.md`; the new Task 008 diagnostics
-and recovery signals remain `ADVISORY` until their integrated positive, exact
-RED, and clean-clone replay is retained. Previously matured signals remain
-blocking, but no maturity label asserts that the current candidate completed its
-required replay.
+`make prove-local`, `make prove-gates`, and CI fail closed: a tool error,
+positive-target finding, or failed RED proof makes the canonical command
+non-zero. `check-fast` owns cheap positive checks and the fast recovery class;
+`prove-local` owns offline-capable RED fixtures and the recovery class boundary;
+`prove-gates` adds external-tool RED fixtures and, through its Make prerequisite,
+the one full recovery closure proof. Failure propagation alone does not set gate
+maturity. Signals move to `BLOCKING` only under
+`docs/decisions/0002-quality-security-profile.md`; Task 008R1 diagnostics and
+recovery remain `ADVISORY`. The integrated implementation replay passed, but the
+exact clean-clone replay of the final docs-bearing candidate remains pending.
+Previously matured signals remain blocking, but no maturity label asserts that
+the current candidate completed its required replay.
 
 Workflow security uses `zizmor --offline` against checked-in files. This keeps
 the canonical local gate deterministic and blocks on enabled offline findings,

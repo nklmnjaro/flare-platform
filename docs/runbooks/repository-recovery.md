@@ -7,6 +7,9 @@ Start from the final clean committed named branch after normal bootstrap:
 ```bash
 make recovery-pack OUTPUT=.platform/recovery/capsule
 make recovery-verify CAPSULE=.platform/recovery/capsule
+make prove-recovery
+# separately requested closure/maintainer evidence:
+make prove-recovery-race
 ```
 
 The Make targets capture the caller PATH before publishing any project
@@ -37,6 +40,52 @@ anywhere in reachable history, current tracked paths whose cached `filter`
 attribute is `lfs`, reachable historical Git LFS attributes or pointer blobs, a
 source race, and an unsafe output boundary. Normalize the repository and create
 a new committed candidate instead of weakening these checks.
+
+## Recovery test ownership
+
+Recovery tests have two explicit, structurally checked name classes.
+`TestRecoveryFast...` contains bounded deterministic unit and class-contract
+tests; `TestRecoveryClosure...` contains the full adversarial pack, verify,
+process, and filesystem proof. Exact allowlists reject an unreviewed test that
+enters either class and reject an admitted test that disappears.
+
+`make check-fast` selects only `^TestRecoveryFast`. `make prove-local` runs the
+fast class contract and an intentional active closure-sentinel RED to prove the
+slow class cannot enter the selector; it does not run closure scenarios.
+`make prove-gates` has `prove-recovery` as a Make prerequisite, so the full
+non-race `^TestRecoveryClosure` suite runs once before the local and external
+RED script. `make verify` invokes an admitted recursive `make prove-gates` and
+therefore receives exactly that one full recovery run, rather than duplicate
+runs through `check-fast` and the gate script.
+
+`make prove-recovery-race` runs the same closure selector with Go race detection
+as a separately named closure/maintainer lane. It is not nested in ordinary
+verification. A prior race result never authorizes skipping the current
+non-race closure proof.
+
+The post-R3 fast selector measured `0.027-0.029s`, and focused
+`make check-fast` measured `12.723s`. The integrated implementation replay before
+the final documentation amendment on
+`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5` retained `14s` for `check-fast`,
+`237s` for `prove-recovery`, `203s` for `prove-local`, `448s` for `prove-gates`,
+and `642s` then `659s` for repeated `verify`. Before the split,
+`make prove-recovery` measured `356.296s`, raw recovery `go test ./...` measured
+`358.644s`, the race suite measured `646.395s`, and the duplicated recovery
+portion of `make prove-local` measured `317.166s`. Those older figures explain
+the split; they are not repaired-candidate success evidence. The final
+docs-bearing candidate's clean-clone transcript must retain current durations,
+and a runtime budget must never silently skip a class, reuse stale success, or
+lower assertions.
+
+The first direct clean-clone attempt from a checkout path containing spaces and
+literal `#[]&` reached step 7 and returned status `2` from
+`make prove-recovery` after `261s`. The class sentinel failed because
+`filepath.Glob` interpreted the checkout path as a pattern. Test discovery now
+uses `os.ReadDir` plus literal entry joins, and the fast class contract includes
+a `source #[]&` regression. A later special-path diagnostics RED and its distinct
+source-pruning repair are retained in the Task 008 integration evidence. Neither
+pre-fix run is acceptance; run the complete matrix again from the exact final
+docs-bearing clean clone.
 
 Repository object alternates, common-directory indirection,
 `extensions.worktreeConfig`, `core.alternateRefsCommand`, and `fsck.*`
