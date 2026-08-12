@@ -1,6 +1,7 @@
 #!/bin/bash -p
-# Hostile exported fixtures are intentionally consumed only by managed children.
-# shellcheck disable=SC2034
+# Hostile fixtures are intentionally consumed indirectly by managed children
+# and by the exact production functions under proof.
+# shellcheck disable=SC2034,SC2317,SC2329
 set -euo pipefail
 
 PROVE_PRIVACY_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
@@ -171,6 +172,103 @@ assert_privacy_capture() {
   fi
   builtin printf \
     'PASS  diagnostics   secrets, controls, paths and invalid UTF-8 sanitized deterministically\n'
+}
+
+render_compound_secret_platform_summary() {
+  local tool compound
+  builtin printf 'schema=flare-platform-diagnostics-v3\n'
+  builtin printf 'run_id=%s\n' "${DIAGNOSTICS_RUN_ID}"
+  builtin printf 'head=%s\n' "${DIAGNOSTICS_SOURCE_HEAD}"
+  builtin printf 'tree=%s\n' "${DIAGNOSTICS_SOURCE_TREE}"
+  builtin printf 'branch=%s\n' "${DIAGNOSTICS_SOURCE_BRANCH}"
+  builtin printf 'dirty_entries=%s\n' "${DIAGNOSTICS_SOURCE_DIRTY_ENTRIES}"
+  compound='os=synthetic api_token: Bearer compound-token-canary visible'
+  compound+=' password: Basic compound-password-canary visible'
+  compound+=' --access-token Bearer compound-flag-canary visible'
+  compound+=' {"client_secret":"Basic compound-json-canary"}'
+  compound+=' Authorization: Bearer compound-authorization-canary visible'
+  builtin printf '%s\n' "${compound}"
+  builtin printf 'arch=synthetic\n'
+  builtin printf 'privacy=supported-secrets-controls-paths-redacted\n'
+  builtin printf 'tool.go=missing\n'
+  for tool in docker kind kubectl shellcheck shfmt actionlint zizmor \
+    hadolint trivy kubeconform kube-linter; do
+    builtin printf 'tool.%s=missing\n' "${tool}"
+  done
+}
+
+write_compound_secret_raw_contract() {
+  write_sanitized_diagnostic capture-status.txt 4096 \
+    render_capture_state complete
+  write_sanitized_diagnostic platform.txt \
+    "${DIAGNOSTICS_MAX_SUMMARY_BYTES}" \
+    render_compound_secret_platform_summary
+  write_sanitized_diagnostic kubernetes-status.txt 4096 \
+    builtin printf 'cluster=absent; no Kubernetes payload collected\n'
+}
+
+assert_compound_canaries_absent() {
+  local file="$1" canary
+  for canary in compound-token-canary compound-password-canary \
+    compound-flag-canary compound-json-canary \
+    compound-authorization-canary; do
+    assert_fixed_text_absent "${canary}" "${file}"
+  done
+}
+
+assert_no_publish_residue() {
+  local unexpected
+  unexpected="$(run_host_command find "${PLATFORM_STATE_DIR}/diagnostics" \
+    -maxdepth 1 -name '.publish.*' -print -quit)"
+  if [[ -n "${unexpected}" ]]; then
+    builtin printf \
+      'FAIL  diagnostics   private publication residue survived\n' >&2
+    return 1
+  fi
+}
+
+assert_compound_secrets_absent_from_publication() {
+  local raw archive checksum output success_output status=0
+  raw="$(diagnostics_raw_directory)"
+  archive="$(diagnostics_archive_path)"
+  checksum="$(diagnostics_checksum_path)"
+  output="${PROOF_ROOT}/compound-publication-failure.log"
+  success_output="${PROOF_ROOT}/compound-publication-success.log"
+
+  prepare_diagnostics_run
+  write_compound_secret_raw_contract
+  validate_diagnostics_raw_evidence "${raw}"
+  assert_compound_canaries_absent "${raw}/platform.txt"
+  publish_diagnostics_archive "${raw}" >"${success_output}" 2>&1
+  [[ -f "${archive}" && ! -L "${archive}" &&
+    -f "${checksum}" && ! -L "${checksum}" ]] || return 1
+  assert_compound_canaries_absent "${archive}"
+  assert_compound_canaries_absent "${checksum}"
+  assert_compound_canaries_absent "${success_output}"
+  assert_no_temporary_evidence "${raw}"
+  assert_no_publish_residue
+
+  prepare_diagnostics_run
+  write_compound_secret_raw_contract
+  (
+    # Called indirectly after the private archive has been verified.
+    # shellcheck disable=SC2317,SC2329
+    publish_diagnostics_checksum_file() { return 86; }
+    publish_diagnostics_archive "${raw}"
+  ) >"${output}" 2>&1 || status=$?
+  if ((status != 86)) || [[ -e "${archive}" || -L "${archive}" ||
+    -e "${checksum}" || -L "${checksum}" ]]; then
+    builtin printf \
+      'FAIL  diagnostics   compound failure cleanup status=%s\n' \
+      "${status}" >&2
+    return 1
+  fi
+  assert_compound_canaries_absent "${raw}/platform.txt"
+  assert_compound_canaries_absent "${output}"
+  assert_no_temporary_evidence "${raw}"
+  assert_no_publish_residue
+  builtin printf \
+    'PASS  diagnostics   compound secret canaries absent from raw ZIP checksum and failure residue\n'
 }
 
 assert_hostile_go_environment_is_sealed() {
@@ -599,6 +697,7 @@ main() {
   assert_missing_sanitizer_does_not_run_go
   assert_kubernetes_scope_is_narrow
   assert_noisy_version_is_streamed_and_bounded
+  assert_compound_secrets_absent_from_publication
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

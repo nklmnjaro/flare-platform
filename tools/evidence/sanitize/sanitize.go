@@ -187,20 +187,13 @@ func redactSensitiveValues(value string, pattern *regexp.Regexp) string {
 			return result.String()
 		}
 		result.WriteString(value[:location[1]])
-		matched := strings.ToLower(value[location[0]:location[1]])
-		replacement, end := sensitiveReplacement(
-			value[location[1]:],
-			strings.Contains(matched, "authorization"),
-		)
+		replacement, end := sensitiveReplacement(value[location[1]:])
 		result.WriteString(replacement)
 		value = value[location[1]+end:]
 	}
 }
 
-func sensitiveReplacement(value string, authorization bool) (string, int) {
-	if authorization {
-		return "<redacted>", len(value)
-	}
+func sensitiveReplacement(value string) (string, int) {
 	if value == "" {
 		return "<redacted>", 0
 	}
@@ -208,12 +201,41 @@ func sensitiveReplacement(value string, authorization bool) (string, int) {
 		end := sensitiveTokenEnd(value, quotedValueEnd(value, value[0]))
 		return string(value[0]) + "<redacted>" + string(value[0]), end
 	}
-	for index, character := range value {
-		if unicode.IsSpace(character) || strings.ContainsRune(",;}]&", character) {
-			return "<redacted>", index
+	end := unquotedSensitiveValueEnd(value)
+	scheme, credentialStart, compound := credentialScheme(value)
+	if compound {
+		credentialEnd := credentialStart + unquotedSensitiveValueEnd(value[credentialStart:])
+		return scheme + " <redacted>", credentialEnd
+	}
+	return "<redacted>", end
+}
+
+func credentialScheme(value string) (string, int, bool) {
+	for _, scheme := range []string{"Bearer", "Basic"} {
+		if len(value) <= len(scheme) || !strings.EqualFold(value[:len(scheme)], scheme) {
+			continue
+		}
+		index := len(scheme)
+		if value[index] != ' ' && value[index] != '\t' {
+			continue
+		}
+		for index < len(value) && (value[index] == ' ' || value[index] == '\t') {
+			index++
+		}
+		if index < len(value) {
+			return value[:len(scheme)], index, true
 		}
 	}
-	return "<redacted>", len(value)
+	return "", 0, false
+}
+
+func unquotedSensitiveValueEnd(value string) int {
+	for index, character := range value {
+		if unicode.IsSpace(character) || strings.ContainsRune(",;}]&", character) {
+			return index
+		}
+	}
+	return len(value)
 }
 
 func sensitiveTokenEnd(value string, start int) int {

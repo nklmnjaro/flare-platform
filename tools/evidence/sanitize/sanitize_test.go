@@ -10,30 +10,51 @@ import (
 
 func TestSanitizeRedactsSupportedSensitiveForms(t *testing.T) {
 	input := strings.Join([]string{
-		"Authorization: Bearer auth-canary",
-		"DB_PASSWORD=password-canary NEXT=visible",
-		`{"api_token":"token-canary","ok":true}`,
-		"clientSecret='secret-canary'; status=ok",
-		"command --access-token flag-canary --verbose",
+		"DB_PASSWORD=password-assignment-canary NEXT=visible",
+		"api_token: Bearer token-canary visible-assignment",
+		"password: Basic password-canary visible-header",
+		"command --access-token Bearer flag-canary --verbose",
+		`{"client_secret":"Basic json-canary","ok":true}`,
+		"Authorization: Bearer authorization-canary visible-authorization",
 	}, "\n")
 	output, truncated := sanitizeForTest(t, input, sanitizeOptions{maximumBytes: 4096})
 	if truncated {
 		t.Fatal("supported sensitive-form fixture was truncated")
 	}
 	for _, secret := range []string{
-		"auth-canary", "password-canary", "token-canary", "secret-canary", "flag-canary",
+		"password-assignment-canary", "token-canary", "password-canary", "flag-canary",
+		"json-canary", "authorization-canary",
 	} {
 		if strings.Contains(output, secret) {
 			t.Fatalf("sanitized output retained %q: %q", secret, output)
 		}
 	}
-	if count := strings.Count(output, "<redacted>"); count != 5 {
-		t.Fatalf("expected five redactions, got %d: %q", count, output)
+	if count := strings.Count(output, "<redacted>"); count != 6 {
+		t.Fatalf("expected six redactions, got %d: %q", count, output)
 	}
-	for _, visible := range []string{"NEXT=visible", `"ok":true`, "status=ok", "--verbose"} {
+	for _, visible := range []string{
+		"NEXT=visible",
+		"Bearer <redacted> visible-assignment",
+		"Basic <redacted> visible-header",
+		"Bearer <redacted> --verbose",
+		`"client_secret":"<redacted>"`,
+		`"ok":true`,
+		"Bearer <redacted> visible-authorization",
+	} {
 		if !strings.Contains(output, visible) {
 			t.Fatalf("sanitizer removed useful context %q: %q", visible, output)
 		}
+	}
+}
+
+func TestSanitizeLeavesUnknownUnkeyedCredentialTextUnchanged(t *testing.T) {
+	input := "Bearer unknown-unkeyed-canary remains prohibited input\n"
+	output, truncated := sanitizeForTest(t, input, sanitizeOptions{maximumBytes: 4096})
+	if truncated {
+		t.Fatal("unknown unkeyed fixture was truncated")
+	}
+	if output != input {
+		t.Fatalf("sanitizer claimed unsupported unkeyed coverage: %q", output)
 	}
 }
 
