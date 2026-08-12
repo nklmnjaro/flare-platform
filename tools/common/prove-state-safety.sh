@@ -30,19 +30,10 @@ copy_diagnostics_fixture() {
     "${target}/tools/common/tooling.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/diagnostics/collect.sh" \
     "${target}/tools/diagnostics/collect.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/diagnostics/evidence.sh" \
+    "${target}/tools/diagnostics/evidence.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh" \
     "${target}/tools/kubernetes/runtime.sh"
-}
-
-initialize_fixture_repo() {
-  local target="$1"
-  printf '.platform/\n' >"${target}/.gitignore"
-  printf 'fixture\n' >"${target}/README.md"
-  run_host_command git -C "${target}" init -q
-  run_host_command git -C "${target}" add .
-  run_host_command git -C "${target}" -c user.name=fixture \
-    -c user.email=fixture@example.invalid \
-    commit -qm 'test: initialize fixture'
 }
 
 run_collect() {
@@ -62,6 +53,26 @@ expect_collect_rejection() {
   fi
   if ! run_host_command grep -Fq "${expected}" "${log}"; then
     printf 'FAIL  state-red      %s failed for the wrong reason\n' "${label}" >&2
+    run_host_command cat -- "${log}" >&2
+    return 1
+  fi
+  printf 'PASS  state-red      %s rejected before mutation\n' "${label}"
+}
+
+expect_state_file_rejection() {
+  local label="$1"
+  local state="$2"
+  local relative="$3"
+  local expected="$4"
+  local log="${state%/.platform}/${label}.log"
+  if PLATFORM_STATE_DIR="${state}" \
+    prepare_state_file "${relative}" >"${log}" 2>&1; then
+    printf 'FAIL  state-red      %s unexpectedly passed\n' "${label}" >&2
+    return 1
+  fi
+  if ! run_host_command grep -Fq "${expected}" "${log}"; then
+    printf 'FAIL  state-red      %s failed for the wrong reason\n' \
+      "${label}" >&2
     run_host_command cat -- "${log}" >&2
     return 1
   fi
@@ -130,12 +141,11 @@ prove_summary_file_symlink_rejected() {
   local target="${WORK_DIR}/summary-file-symlink"
   local sentinel="${WORK_DIR}/summary-sentinel"
   run_host_command mkdir -p "${target}/.platform/diagnostics/raw"
-  copy_diagnostics_fixture "${target}"
-  initialize_fixture_repo "${target}"
   printf 'outside-sentinel\n' >"${sentinel}"
   run_host_command ln -s "${sentinel}" \
     "${target}/.platform/diagnostics/raw/platform.txt"
-  expect_collect_rejection summary-file-symlink "${target}" \
+  expect_state_file_rejection summary-file-symlink "${target}/.platform" \
+    'diagnostics/raw/platform.txt' \
     'refusing generated-state file symlink'
   run_host_command grep -Fqx outside-sentinel "${sentinel}"
 }
@@ -144,12 +154,11 @@ prove_status_file_symlink_rejected() {
   local target="${WORK_DIR}/status-file-symlink"
   local sentinel="${WORK_DIR}/status-sentinel"
   run_host_command mkdir -p "${target}/.platform/diagnostics/raw"
-  copy_diagnostics_fixture "${target}"
-  initialize_fixture_repo "${target}"
   printf 'outside-sentinel\n' >"${sentinel}"
   run_host_command ln -s "${sentinel}" \
     "${target}/.platform/diagnostics/raw/kubernetes-status.txt"
-  expect_collect_rejection status-file-symlink "${target}" \
+  expect_state_file_rejection status-file-symlink "${target}/.platform" \
+    'diagnostics/raw/kubernetes-status.txt' \
     'refusing generated-state file symlink'
   run_host_command grep -Fqx outside-sentinel "${sentinel}"
 }

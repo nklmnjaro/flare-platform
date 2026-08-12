@@ -5,7 +5,7 @@ unexport BASH_ENV ENV MAKEFILES MFLAGS GNUMAKEFLAGS
 
 .PHONY: help doctor environment-evidence bootstrap tool-lock hooks check-fast check
 .PHONY: prove-local prove-environment prove-gates verify
-.PHONY: prove-integrity artifact-pack artifact-verify diagnose verify-runtime
+.PHONY: prove-integrity prove-diagnostics artifact-pack artifact-verify diagnose verify-runtime
 .PHONY: kind-up kind-smoke kind-negative kind-down clean
 
 help:
@@ -21,6 +21,7 @@ help:
 	  'prove-environment prove environment capability RED fixtures' \
 	  'prove-gates    prove all candidate gates fail on RED fixtures' \
 	  'prove-integrity prove handoff integrity fails closed' \
+	  'prove-diagnostics prove fresh and private diagnostic evidence' \
 	  'artifact-pack  create deterministic review artifact' \
 	  'artifact-verify verify review artifact and manifest' \
 	  'diagnose       collect bounded local diagnostics' \
@@ -64,6 +65,10 @@ prove-gates:
 
 prove-integrity:
 	@tools/artifacts/prove-integrity.sh
+
+prove-diagnostics:
+	@tools/diagnostics/prove-freshness.sh
+	@tools/diagnostics/prove-privacy.sh
 
 artifact-pack: export ARTIFACT_SOURCE = $(SOURCE)
 artifact-pack: export ARTIFACT_OUTPUT = $(OUTPUT)

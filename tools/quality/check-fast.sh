@@ -15,7 +15,8 @@ collect_shell_files() {
 
 check_go_tools() {
   local module
-  for module in tools/artifacts/archive tools/quality/policycheck kubernetes/reference/server; do
+  for module in tools/artifacts/archive tools/evidence/sanitize \
+    tools/quality/policycheck kubernetes/reference/server; do
     (
       cd "${PLATFORM_ROOT}/${module}"
       run_managed_tool go test ./...

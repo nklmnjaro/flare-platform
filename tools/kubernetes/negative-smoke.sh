@@ -53,7 +53,7 @@ observe_expected_failure() {
 diagnostics_are_bounded() {
   local capture file size
   local target="${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"
-  local -a captures=(nodes resources events describe-pods logs)
+  local -a captures=(nodes resources events logs)
   if [[ ! -d "${target}" ]]; then
     printf 'FAIL  diagnostics   expected capture directory is missing\n' >&2
     return 1
@@ -168,7 +168,7 @@ prove_negative_evidence_format() (
 
 prove_diagnostics_measurement_failure() (
   local capture status
-  local -a captures=(nodes resources events describe-pods logs)
+  local -a captures=(nodes resources events logs)
   PLATFORM_DIAGNOSTICS_DIR="$(run_host_command mktemp -d)"
   trap 'run_host_command rm -rf -- "${PLATFORM_DIAGNOSTICS_DIR}"' EXIT
   run_host_command mkdir -p -- "${PLATFORM_DIAGNOSTICS_DIR}/kubernetes"

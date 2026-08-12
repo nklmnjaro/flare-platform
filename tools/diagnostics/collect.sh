@@ -4,75 +4,115 @@ set -euo pipefail
 DIAGNOSTICS_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "${DIAGNOSTICS_SOURCE_DIR}" != "${BASH_SOURCE[0]}" ]] ||
   DIAGNOSTICS_SOURCE_DIR=.
-builtin source "${DIAGNOSTICS_SOURCE_DIR}/../common/env.sh"
-builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
+builtin source "${DIAGNOSTICS_SOURCE_DIR}/evidence.sh"
 builtin source "${PLATFORM_ROOT}/tools/kubernetes/runtime.sh"
-unset DIAGNOSTICS_SOURCE_DIR
+builtin unset DIAGNOSTICS_SOURCE_DIR
 
-first_line() {
+diagnostics_tool_identity_command() {
   local tool="$1"
-  local output
   case "${tool}" in
     go)
-      output="$(run_managed_tool_bounded 5s go version 2>&1)" || return
+      run_managed_tool_bounded 5s go version
       ;;
     docker)
-      docker_target_ensure || return
-      output="$(docker_command 5s --version 2>&1)" || return
+      docker_target_ensure && docker_command 5s --version
       ;;
     kind)
-      output="$(kind_command 5s version 2>&1)" || return
+      kind_command 5s version
       ;;
     kubectl)
-      output="$(kubectl_command 5s version --client=true 2>&1)" || return
+      kubectl_command 5s version --client=true
       ;;
     *)
-      output="$(run_managed_tool_bounded 5s "${tool}" --version 2>&1)" || return
+      run_managed_tool_bounded 5s "${tool}" --version
       ;;
   esac
-  output="${output%%$'\n'*}"
-  printf '%.300s\n' "${output}"
+}
+
+first_line() {
+  local tool="$1" framed report payload
+  framed="$({
+    set +e
+    diagnostics_tool_identity_command "${tool}" 2>&1 |
+      sanitize_diagnostics_stream 300 --single-line 2>/dev/null
+    local -a statuses=("${PIPESTATUS[@]}")
+    ((statuses[1] == 0))
+  })" || {
+    builtin printf 'version-unavailable\n'
+    return 0
+  }
+  [[ "${framed}" == *$'\n'* ]] || {
+    builtin printf 'version-unavailable\n'
+    return 0
+  }
+  report="${framed%%$'\n'*}"
+  payload="${framed#*$'\n'}"
+  case "${report}" in
+    sanitizer_truncated=true | sanitizer_truncated=false) ;;
+    *)
+      builtin printf 'version-unavailable\n'
+      return 0
+      ;;
+  esac
+  [[ -n "${payload}" ]] || payload=version-unavailable
+  builtin printf '%s\n' "${payload}"
 }
 
 write_tool_inventory() {
   local tool
-  for tool in go docker kind kubectl shellcheck shfmt actionlint zizmor hadolint trivy kubeconform kube-linter; do
+  for tool in go docker kind kubectl shellcheck shfmt actionlint zizmor \
+    hadolint trivy kubeconform kube-linter; do
     if require_tool "${tool}" >/dev/null 2>&1; then
-      printf 'tool.%s=present | %s\n' "${tool}" "$(first_line "${tool}")"
+      builtin printf 'tool.%s=present | %s\n' \
+        "${tool}" "$(first_line "${tool}")"
     else
-      printf 'tool.%s=missing\n' "${tool}"
+      builtin printf 'tool.%s=missing\n' "${tool}"
     fi
   done
 }
 
+render_capture_state() {
+  local state="$1"
+  builtin printf 'schema=flare-platform-diagnostics-capture-v2\n'
+  builtin printf 'state=%s\n' "${state}"
+  builtin printf 'run_id=%s\n' "${DIAGNOSTICS_RUN_ID}"
+  builtin printf 'head=%s\n' "${DIAGNOSTICS_SOURCE_HEAD}"
+  builtin printf 'tree=%s\n' "${DIAGNOSTICS_SOURCE_TREE}"
+}
+
+write_capture_state() {
+  write_sanitized_diagnostic capture-status.txt 4096 \
+    render_capture_state "$1"
+}
+
+render_summary() {
+  builtin printf 'schema=flare-platform-diagnostics-v3\n'
+  builtin printf 'run_id=%s\n' "${DIAGNOSTICS_RUN_ID}"
+  builtin printf 'head=%s\n' "${DIAGNOSTICS_SOURCE_HEAD}"
+  builtin printf 'tree=%s\n' "${DIAGNOSTICS_SOURCE_TREE}"
+  builtin printf 'branch=%s\n' "${DIAGNOSTICS_SOURCE_BRANCH}"
+  builtin printf 'dirty_entries=%s\n' "${DIAGNOSTICS_SOURCE_DIRTY_ENTRIES}"
+  builtin printf 'os=%s\n' "$(run_host_command uname -s)"
+  builtin printf 'arch=%s\n' "$(run_host_command uname -m)"
+  builtin printf 'privacy=supported-secrets-controls-paths-redacted\n'
+  write_tool_inventory
+}
+
 write_summary() {
-  local dirty_count
-  local target
-  target="$(prepare_state_file "diagnostics/raw/platform.txt")" || return
-  dirty_count="$(run_host_command git -C "${PLATFORM_ROOT}" \
-    status --porcelain=v1 | run_host_command wc -l)"
-  dirty_count="${dirty_count//[[:space:]]/}"
-  {
-    printf 'schema=flare-platform-diagnostics-v1\n'
-    printf 'head=%s\n' "$(run_host_command git -C "${PLATFORM_ROOT}" rev-parse HEAD)"
-    printf 'branch=%s\n' "$(run_host_command git -C "${PLATFORM_ROOT}" branch --show-current)"
-    printf 'dirty_entries=%s\n' "${dirty_count}"
-    printf 'os=%s\n' "$(run_host_command uname -s)"
-    printf 'arch=%s\n' "$(run_host_command uname -m)"
-    write_tool_inventory
-  } >"${target}"
+  write_sanitized_diagnostic platform.txt \
+    "${DIAGNOSTICS_MAX_SUMMARY_BYTES}" render_summary
 }
 
 write_cluster_status() {
   local message="$1"
-  local target
-  target="$(prepare_state_file "diagnostics/raw/kubernetes-status.txt")" || return
-  printf '%s\n' "${message}" >"${target}"
+  write_sanitized_diagnostic kubernetes-status.txt 4096 \
+    builtin printf '%s\n' "${message}"
 }
 
 collect_cluster_diagnostics() {
   local presence
-  if ! require_tool kind >/dev/null 2>&1 || ! require_tool kubectl >/dev/null 2>&1; then
+  if ! require_tool kind >/dev/null 2>&1 ||
+    ! require_tool kubectl >/dev/null 2>&1; then
     write_cluster_status 'cluster=not-inspected; kind or kubectl missing'
     return 0
   fi
@@ -81,43 +121,55 @@ collect_cluster_diagnostics() {
     return 0
   }
   if [[ "${presence}" == absent ]]; then
-    write_cluster_status 'cluster=absent; retained current runtime capture when present'
+    write_cluster_status 'cluster=absent; no Kubernetes payload collected'
     return 0
   fi
-  if [[ ! -f "${KUBECONFIG}" ]]; then
-    write_cluster_status 'cluster=present; kubeconfig=absent'
+  if [[ ! -f "${KUBECONFIG}" || -L "${KUBECONFIG}" ]]; then
+    write_cluster_status 'cluster=present; kubeconfig=absent-or-unsafe'
     return 0
   fi
   if "${PLATFORM_ROOT}/tools/kubernetes/diagnostics.sh"; then
-    write_cluster_status 'cluster=present; bounded inspection collected'
+    write_cluster_status \
+      'cluster=present; owned bounded inspection collected'
   else
-    write_cluster_status 'cluster=present; bounded inspection failed; partial evidence retained'
+    reset_state_directory "${DIAGNOSTICS_RAW_RELATIVE}/kubernetes" || return
+    write_cluster_status \
+      'cluster=present; inspection refused or failed; no raw command output retained'
   fi
 }
 
 package_diagnostics() {
-  local archive
-  if ! require_tool go >/dev/null 2>&1; then
-    printf 'WARN  diagnose      Go missing; raw diagnostics kept below .platform/diagnostics\n' >&2
-    return 0
+  publish_diagnostics_archive "$(diagnostics_raw_directory)"
+  builtin printf \
+    'PASS  diagnose      fresh bounded verified diagnostics published\n'
+}
+
+finalize_failed_capture() {
+  local status=$? cleanup_status=0
+  trap - EXIT
+  invalidate_published_diagnostics >/dev/null 2>&1 || cleanup_status=1
+  if [[ -n "${DIAGNOSTICS_RUN_ID}" ]] &&
+    require_diagnostics_sanitizer >/dev/null 2>&1; then
+    write_capture_state failed >/dev/null 2>&1 || cleanup_status=1
   fi
-  archive="$(prepare_state_file "platform-diagnostics.zip")" || return
-  prepare_state_file "platform-diagnostics.zip.sha256" >/dev/null || return
-  run_host_command rm -f -- "${archive}" "${archive}.sha256"
-  (
-    builtin cd "${PLATFORM_ROOT}/tools/artifacts/archive"
-    run_managed_tool go run . pack \
-      --source "${PLATFORM_DIAGNOSTICS_DIR}" --output "${archive}"
-  )
-  printf 'PASS  diagnose      .platform/platform-diagnostics.zip\n'
+  if ((status == 0 && cleanup_status != 0)); then
+    status=1
+  fi
+  builtin exit "${status}"
 }
 
 main() {
-  docker_target_ensure || return
-  ensure_state_directory "diagnostics/raw" || return
+  umask 077
+  trap finalize_failed_capture EXIT
+  prepare_diagnostics_run
+  write_capture_state collecting
   write_summary
   collect_cluster_diagnostics
+  write_capture_state complete
   package_diagnostics
+  trap - EXIT
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

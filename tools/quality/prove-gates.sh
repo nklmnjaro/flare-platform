@@ -371,10 +371,26 @@ prove_red_marker_guard() {
   printf 'PASS  red-marker    rendering, reason, status, and bounds fail closed\n'
 }
 
+prove_policycheck_red() {
+  local label="$1" marker="$2" fixture="$3"
+  # Positional arguments are expanded only by the privileged child shell.
+  # shellcheck disable=SC2016
+  expect_failure_with_marker "${label}" 1 "${marker}" 30s \
+    "${PROVE_GATES_BASH_PATH}" -p -c '
+      root=$1
+      fixture=$2
+      builtin cd -- "$root/tools/quality/policycheck" || exit
+      "$root/tools/common/run-managed-tool.sh" go run . \
+        -path "$root/$fixture"
+    ' _ "${PLATFORM_ROOT}" "${fixture}"
+}
+
 prove_local_gates() {
   "${PLATFORM_ROOT}/tools/bootstrap/prove-environment.sh"
   "${PLATFORM_ROOT}/tools/artifacts/prove-integrity.sh"
   "${PLATFORM_ROOT}/tools/diagnostics/prove-delivery-contract.sh"
+  "${PLATFORM_ROOT}/tools/diagnostics/prove-freshness.sh"
+  "${PLATFORM_ROOT}/tools/diagnostics/prove-privacy.sh"
   "${PLATFORM_ROOT}/tools/common/prove-state-safety.sh"
   "${PLATFORM_ROOT}/tools/common/prove-process-state.sh"
   "${PLATFORM_ROOT}/tools/common/prove-lifecycle-lease.sh"
@@ -384,10 +400,11 @@ prove_local_gates() {
   "${PLATFORM_ROOT}/tools/kubernetes/publish-runtime-evidence.sh" --self-check
   "${PLATFORM_ROOT}/tools/kubernetes/negative-smoke.sh" --self-check
   prove_red_marker_guard
-  expect_failure source-line-policy run_managed_tool go run \
-    ./tools/quality/policycheck -path tests/fixtures/policy/long-line.sh
-  expect_failure source-function-policy run_managed_tool go run \
-    ./tools/quality/policycheck -path tests/fixtures/policy/long-function.sh
+  prove_policycheck_red source-line-policy \
+    'line has 123 chars; max is 120' tests/fixtures/policy/long-line.sh
+  prove_policycheck_red source-function-policy \
+    'function too_large has 82 lines; max is 80' \
+    tests/fixtures/policy/long-function.sh
   expect_failure go-format run_managed_tool gofmt -d \
     tests/fixtures/go/unformatted.go
   expect_failure doctor-boundary "${PROVE_GATES_ENV_PATH}" \

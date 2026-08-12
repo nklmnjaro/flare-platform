@@ -103,6 +103,9 @@ elif [[ "${arguments}" == *"get namespace"* ]]; then
   [[ "${FIXTURE_NAMESPACE_QUERY_FAIL:-false}" != true ]] || exit 7
   [[ "$(<"${FIXTURE_NAMESPACE_STATE:?}")" == absent ]] ||
     printf 'namespace/flare-platform-reference\n'
+elif [[ -n "${FIXTURE_DIAGNOSTIC_FAIL_MATCH:-}" &&
+  "${arguments}" == *"${FIXTURE_DIAGNOSTIC_FAIL_MATCH}"* ]]; then
+  exit "${FIXTURE_DIAGNOSTIC_FAIL_STATUS:-7}"
 elif [[ "${FIXTURE_NOISY_RESPONSES:-false}" == true ]]; then
   printf '%*s' 200000 '' | while IFS= read -r -N 4096 chunk; do
     printf '%s' "${chunk// /x}"

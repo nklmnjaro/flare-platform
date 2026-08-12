@@ -31,6 +31,7 @@ unset FIXTURE_KIND_CREATE_STATUS FIXTURE_KIND_LOG
 unset FIXTURE_NAMESPACE_QUERY_FAIL FIXTURE_NAMESPACE_STATE
 unset FIXTURE_NODE_WAIT_STATUS
 unset FIXTURE_CHECKOUT_ID FIXTURE_KUBECTL_LOG
+unset FIXTURE_DIAGNOSTIC_FAIL_MATCH FIXTURE_DIAGNOSTIC_FAIL_STATUS
 unset FIXTURE_NAMESPACE_DELETE_MARKER FIXTURE_NOISY_RESPONSES
 unset FIXTURE_OWNERSHIP_CLUSTER_NAME FIXTURE_OWNERSHIP_CONTRACT
 unset FIXTURE_OWNERSHIP_CREATE_ARGS FIXTURE_OWNERSHIP_MODE
@@ -41,6 +42,7 @@ copy_runtime_files() {
   local target="$1"
   local script
   run_host_command mkdir -p "${target}/tools/bootstrap" "${target}/tools/common" \
+    "${target}/tools/diagnostics" "${target}/tools/evidence/sanitize" \
     "${target}/tools/kubernetes" "${target}/.platform/bootstrap" \
     "${target}/.platform/aqua/bin" "${target}/.platform/aqua/test-fixtures" \
     "${target}/.platform-test/docker-target"
@@ -63,6 +65,12 @@ copy_runtime_files() {
   run_host_command chmod 0755 "${target}/tools/common/clean.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/common/evidence-capture.sh" \
     "${target}/tools/common/evidence-capture.sh"
+  run_host_command cp "${PLATFORM_ROOT}/tools/diagnostics/evidence.sh" \
+    "${target}/tools/diagnostics/evidence.sh"
+  for script in go.mod main.go sanitize.go; do
+    run_host_command cp "${PLATFORM_ROOT}/tools/evidence/sanitize/${script}" \
+      "${target}/tools/evidence/sanitize/${script}"
+  done
   run_host_command cp "${PLATFORM_ROOT}/tools/common/tooling.sh" \
     "${target}/tools/common/tooling-production.sh"
   run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/managed-tool-fixture.sh" \
@@ -76,11 +84,15 @@ copy_runtime_files() {
     run_host_command cp "${PLATFORM_ROOT}/tools/kubernetes/${script}.sh" \
       "${target}/tools/kubernetes/${script}.sh"
   done
+  run_host_command cp \
+    "${PLATFORM_ROOT}/tools/kubernetes/diagnostic-authorization.sh" \
+    "${target}/tools/kubernetes/diagnostic-authorization.sh"
   printf '%s\n' "${DOCKER_TEST_TOKEN}" \
     >"${target}/.platform-test/docker-target/.docker-target-owner"
   printf '%s\n' "${RUNTIME_TEST_TOKEN}" \
     >"${target}/.platform/aqua/test-fixtures/.runtime-fixture-owner"
   write_docker_mock "${target}"
+  write_diagnostics_go_mock "${target}"
 }
 
 run_runtime_fixture() (
@@ -1120,26 +1132,152 @@ write_noisy_kubectl_mock() {
   write_kubectl_mock "${target}"
 }
 
+write_diagnostics_go_mock() {
+  local target="$1"
+  run_host_command cat >"${target}/.platform/aqua/test-fixtures/go" <<'MOCK'
+#!/bin/bash -p
+set -euo pipefail
+[[ "${1:-}" == run && "${2:-}" == . ]] || exit 64
+shift 2
+maximum=''
+while (($#)); do
+  case "$1" in
+    --max-bytes)
+      (($# >= 2)) || exit 64
+      maximum="$2"
+      shift 2
+      ;;
+    --repository | --home)
+      (($# >= 2)) || exit 64
+      shift 2
+      ;;
+    *) exit 64 ;;
+  esac
+done
+[[ "${maximum}" =~ ^[0-9]+$ && "${maximum}" -gt 0 ]] || exit 64
+payload=''
+extra=''
+discard=''
+IFS= builtin read -r -N "${maximum}" payload || :
+truncated=false
+if IFS= builtin read -r -N 1 extra; then
+  truncated=true
+  while IFS= builtin read -r -N 4096 discard; do :; done
+fi
+builtin printf 'sanitizer_truncated=%s\n%s' "${truncated}" "${payload}"
+MOCK
+  publish_managed_mock "${target}" go
+}
+
+assert_exact_diagnostics_kubectl_log() {
+  local log="$1" expected
+  local -a expected_commands=(
+    '--request-timeout=10s get nodes -o wide'
+    '--request-timeout=10s -n flare-platform-reference get all -o wide'
+    '--request-timeout=10s -n flare-platform-reference get events --sort-by=.lastTimestamp'
+  )
+  expected='--request-timeout=10s -n flare-platform-reference logs '
+  expected+='deployment/platform-reference --all-pods=true --tail=200 --timestamps=true'
+  expected_commands+=("${expected}")
+  [[ "$(run_host_command wc -l <"${log}")" -eq 7 ]]
+  [[ "$(run_host_command grep -Fxc -- \
+    '--request-timeout=10s config current-context' "${log}")" -eq 2 ]]
+  [[ "$(run_host_command grep -Fc -- \
+    '--request-timeout=10s -n kube-system get configmap flare-platform-ownership -o go-template=' \
+    "${log}")" -eq 1 ]]
+  for expected in "${expected_commands[@]}"; do
+    [[ "$(run_host_command grep -Fxc -- "${expected}" "${log}")" -eq 1 ]]
+  done
+}
+
 prove_diagnostics_are_bounded() {
   local target="${WORK_DIR}/diagnostics"
-  local oversized checkout_id
+  local captures checkout_id oversized temporary
   copy_runtime_files "${target}"
   write_noisy_kubectl_mock "${target}"
   checkout_id="$(checkout_id_for_target "${target}")" || return
   printf 'fixture\n' >"${target}/.platform/kubeconfig"
   FIXTURE_CHECKOUT_ID="${checkout_id}" FIXTURE_NOISY_RESPONSES=true \
+    FIXTURE_KUBECTL_LOG="${target}/kubectl.log" \
     run_runtime_fixture "${target}" tools/kubernetes/diagnostics.sh >/dev/null
-  oversized="$(run_host_command find "${target}/.platform/diagnostics" \
+  assert_exact_diagnostics_kubectl_log "${target}/kubectl.log"
+  oversized="$(run_host_command find "${target}/.platform/diagnostics/raw" \
     -type f -size +132000c -print -quit)"
   [[ -z "${oversized}" ]]
-  if run_host_command find "${target}/.platform/diagnostics" \
-    -name '.capture.*' -print -quit | run_host_command grep -q .; then
+  temporary="$(run_host_command find "${target}/.platform/diagnostics/raw" \
+    \( -name '.framed.*' -o -name '.text.*' -o -name '.capture.*' \
+    -o -name '.render.*' \) -print -quit)"
+  if [[ -n "${temporary}" ]]; then
     printf 'FAIL  kube-red       temporary diagnostic capture leaked\n' >&2
     return 1
   fi
+  captures="$(run_host_command find \
+    "${target}/.platform/diagnostics/raw/kubernetes" -maxdepth 1 \
+    -type f -printf '%f\n' | run_host_command sort)"
+  [[ "${captures}" == $'events.txt\nlogs.txt\nnodes.txt\nresources.txt' ]]
   run_host_command grep -Fqx 'truncated=true' \
     "${target}/.platform/diagnostics/raw/kubernetes/nodes.txt"
   printf 'PASS  kube-green     failure diagnostics remain stream-bounded\n'
+}
+
+prove_diagnostics_query_failure_resets() {
+  local target="${WORK_DIR}/diagnostics-query-failure"
+  local checkout_id output partial status=0
+  copy_runtime_files "${target}"
+  write_noisy_kubectl_mock "${target}"
+  checkout_id="$(checkout_id_for_target "${target}")" || return
+  printf 'fixture\n' >"${target}/.platform/kubeconfig"
+  output="${target}/diagnostics.out"
+  FIXTURE_CHECKOUT_ID="${checkout_id}" FIXTURE_NOISY_RESPONSES=true \
+    FIXTURE_DIAGNOSTIC_FAIL_MATCH='get events' \
+    FIXTURE_KUBECTL_LOG="${target}/kubectl.log" \
+    run_runtime_fixture "${target}" tools/kubernetes/diagnostics.sh \
+    >"${output}" 2>&1 || status=$?
+  [[ "${status}" -eq 7 ]]
+  partial="$(run_host_command find \
+    "${target}/.platform/diagnostics/raw/kubernetes" -mindepth 1 \
+    -print -quit)"
+  [[ -z "${partial}" ]]
+  run_host_command grep -Fq 'get nodes' "${target}/kubectl.log"
+  run_host_command grep -Fq 'get all' "${target}/kubectl.log"
+  run_host_command grep -Fq 'get events' "${target}/kubectl.log"
+  if run_host_command grep -Fq 'logs deployment' "${target}/kubectl.log"; then
+    printf 'FAIL  kube-red       query failure allowed a later payload read\n' >&2
+    return 1
+  fi
+  printf 'PASS  kube-red       query failure reset all Kubernetes payloads\n'
+}
+
+prove_foreign_owner_diagnostics_are_rejected() {
+  local target="${WORK_DIR}/diagnostics-foreign-owner"
+  local foreign="${WORK_DIR}/diagnostics-foreign-checkout"
+  local output="${target}/diagnostics.out" log="${target}/kubectl.log"
+  local foreign_id partial status=0
+  copy_runtime_files "${target}"
+  copy_runtime_files "${foreign}"
+  write_noisy_kubectl_mock "${target}"
+  foreign_id="$(checkout_id_for_target "${foreign}")" || return
+  printf 'fixture\n' >"${target}/.platform/kubeconfig"
+  FIXTURE_CHECKOUT_ID="${foreign_id}" FIXTURE_KUBECTL_LOG="${log}" \
+    run_runtime_fixture "${target}" tools/kubernetes/diagnostics.sh \
+    >"${output}" 2>&1 || status=$?
+  [[ "${status}" -eq 1 ]]
+  run_host_command grep -Fqx \
+    'FAIL  ownership     refusing cluster owned by another checkout' \
+    "${output}"
+  [[ "$(run_host_command grep -Fc 'config current-context' "${log}")" -eq 2 ]]
+  [[ "$(run_host_command grep -Fc \
+    'get configmap flare-platform-ownership' "${log}")" -eq 1 ]]
+  if run_host_command grep -Eq \
+    'get nodes|get all|get events|logs deployment' "${log}"; then
+    printf 'FAIL  kube-red       foreign owner reached a payload query\n' >&2
+    return 1
+  fi
+  partial="$(run_host_command find \
+    "${target}/.platform/diagnostics/raw/kubernetes" -mindepth 1 \
+    -print -quit)"
+  [[ -z "${partial}" ]]
+  printf 'PASS  kube-red       foreign owner rejected before payload collection\n'
 }
 
 shared_lease_root_for_target() (
@@ -1333,6 +1471,8 @@ main() {
   prove_other_checkout_namespace_is_not_deleted
   prove_kubeconfig_symlink_is_rejected
   prove_diagnostics_are_bounded
+  prove_diagnostics_query_failure_resets
+  prove_foreign_owner_diagnostics_are_rejected
   prove_build_reference_requires_lifecycle_lease
   prove_clean_waits_for_lifecycle_lease
   prove_cross_checkout_create_is_serialized
