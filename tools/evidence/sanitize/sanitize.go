@@ -90,12 +90,6 @@ func sanitize(input io.Reader, output io.Writer, options sanitizeOptions) (sanit
 	for {
 		fragment, err := reader.ReadSlice('\n')
 		line, overflow = appendLineFragment(line, fragment, overflow)
-		if options.singleLine && lineNumber == 0 && overflow && errors.Is(err, bufio.ErrBufferFull) {
-			if writeErr := writeSanitizedLine(writer, line, true, false, options); writeErr != nil {
-				return sanitizeResult{}, writeErr
-			}
-			return sanitizeResult{truncated: true}, nil
-		}
 		if err == nil || errors.Is(err, io.EOF) {
 			lineNumber++
 			if !options.singleLine || lineNumber == 1 {
@@ -103,9 +97,6 @@ func sanitize(input io.Reader, output io.Writer, options sanitizeOptions) (sanit
 				if writeErr := writeSanitizedLine(writer, line, overflow, err == nil, options); writeErr != nil {
 					return sanitizeResult{}, writeErr
 				}
-			}
-			if options.singleLine && lineNumber == 1 {
-				return sanitizeResult{truncated: lineTruncated || writer.truncated}, nil
 			}
 			line = line[:0]
 			overflow = false

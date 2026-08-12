@@ -113,14 +113,43 @@ func TestSanitizeBoundsOutputAndDrainsLongLine(t *testing.T) {
 	}
 }
 
-func TestSanitizeSingleLineStopsAfterFirstLogicalLine(t *testing.T) {
-	input := "first\nAuthorization: second-line-secret\n"
-	output, truncated := sanitizeForTest(t, input, sanitizeOptions{maximumBytes: 4096, singleLine: true})
+func TestSanitizeSingleLineEmitsFirstLogicalLineAndDrains(t *testing.T) {
+	input := strings.NewReader("first\nAuthorization: second-line-secret\n" +
+		strings.Repeat("ignored second-line bytes ", maximumLogicalLineBytes))
+	var sanitized bytes.Buffer
+	result, err := sanitize(input, &sanitized, sanitizeOptions{maximumBytes: 4096, singleLine: true})
+	if err != nil {
+		t.Fatalf("sanitize: %v", err)
+	}
+	output := sanitized.String()
+	truncated := result.truncated
 	if truncated {
 		t.Fatal("single-line selection was reported as truncation")
 	}
 	if output != "first\n" {
 		t.Fatalf("unexpected single-line output: %q", output)
+	}
+	if input.Len() != 0 {
+		t.Fatalf("single-line mode did not drain input: %d bytes remain", input.Len())
+	}
+}
+
+func TestSanitizeSingleLineDrainsAfterTruncatedFirstLine(t *testing.T) {
+	input := strings.NewReader(strings.Repeat("x", maximumLogicalLineBytes+1) +
+		"\n" + strings.Repeat("ignored", maximumLogicalLineBytes))
+	var sanitized bytes.Buffer
+	result, err := sanitize(input, &sanitized, sanitizeOptions{maximumBytes: maximumAllowedOutputBytes, singleLine: true})
+	if err != nil {
+		t.Fatalf("sanitize: %v", err)
+	}
+	if !result.truncated {
+		t.Fatal("truncated first line was not reported")
+	}
+	if !strings.HasSuffix(sanitized.String(), " <line-truncated>\n") {
+		t.Fatalf("first-line truncation marker missing: %q", sanitized.String())
+	}
+	if input.Len() != 0 {
+		t.Fatalf("single-line mode did not drain after overflow: %d bytes remain", input.Len())
 	}
 }
 

@@ -31,43 +31,44 @@ diagnostics_tool_identity_command() {
 
 first_line() {
   local tool="$1" framed report payload
+  local frame_end='__FLARE_TOOL_IDENTITY_FRAME_END__'
   framed="$({
     set +e
     diagnostics_tool_identity_command "${tool}" 2>&1 |
       sanitize_diagnostics_stream 300 --single-line 2>/dev/null
     local -a statuses=("${PIPESTATUS[@]}")
-    ((statuses[1] == 0))
-  })" || {
-    builtin printf 'version-unavailable\n'
-    return 0
-  }
-  [[ "${framed}" == *$'\n'* ]] || {
-    builtin printf 'version-unavailable\n'
-    return 0
-  }
+    ((statuses[0] == 0 && statuses[1] == 0)) || return
+    builtin printf '%s' "${frame_end}"
+  })" || return
+  [[ "${framed}" == *"${frame_end}" ]] || return 1
+  framed="${framed%"${frame_end}"}"
+  [[ "${framed}" == *$'\n'* ]] || return 1
   report="${framed%%$'\n'*}"
   payload="${framed#*$'\n'}"
-  case "${report}" in
-    sanitizer_truncated=true | sanitizer_truncated=false) ;;
-    *)
-      builtin printf 'version-unavailable\n'
-      return 0
-      ;;
-  esac
-  [[ -n "${payload}" ]] || payload=version-unavailable
+  [[ "${report}" == sanitizer_truncated=false ]] || return 1
+  [[ "${payload}" != *$'\n' ]] || payload="${payload%$'\n'}"
+  [[ -n "${payload}" && "${payload}" != *$'\n'* ]] || return 1
   builtin printf '%s\n' "${payload}"
+}
+
+write_tool_inventory_entry() {
+  local tool="$1" identity
+  if ! require_tool "${tool}" >/dev/null 2>&1; then
+    builtin printf 'tool.%s=missing\n' "${tool}"
+    return 0
+  fi
+  if identity="$(first_line "${tool}")"; then
+    builtin printf 'tool.%s=present | %s\n' "${tool}" "${identity}"
+  else
+    builtin printf 'tool.%s=version-unavailable\n' "${tool}"
+  fi
 }
 
 write_tool_inventory() {
   local tool
   for tool in go docker kind kubectl shellcheck shfmt actionlint zizmor \
     hadolint trivy kubeconform kube-linter; do
-    if require_tool "${tool}" >/dev/null 2>&1; then
-      builtin printf 'tool.%s=present | %s\n' \
-        "${tool}" "$(first_line "${tool}")"
-    else
-      builtin printf 'tool.%s=missing\n' "${tool}"
-    fi
+    write_tool_inventory_entry "${tool}"
   done
 }
 

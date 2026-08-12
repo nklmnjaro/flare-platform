@@ -147,13 +147,17 @@ diagnostics_source_tree_snapshot_digest() (
     return 1
   }
   {
-    run_host_command find -P "${root}" -mindepth 1 \
-      \( -path "${root}/.git" -o -path "${root}/.platform" \) \
-      -prune -o -print0 |
+    (
+      builtin cd -P -- "${root}" || return
+      run_host_command find -P . -mindepth 1 \
+        \( -path './.git' -o -path './.platform' \) \
+        -prune -o -print0
+    ) |
       run_host_command sort -z | (
       while IFS= builtin read -r -d '' entry; do
-        relative="${entry#"${root}/"}"
+        relative="${entry#./}"
         [[ -n "${relative}" && "${relative}" != "${entry}" ]] || return 1
+        entry="${root}/${relative}"
         ((count += 1))
         ((path_bytes += ${#relative}))
         if ((count > DIAGNOSTICS_SOURCE_MAX_ENTRIES || \
@@ -619,6 +623,7 @@ validate_diagnostics_platform_summary() {
     value="${lines[$((index + 9))]}"
     case "${value}" in
       "tool.${tool}=missing") ;;
+      "tool.${tool}=version-unavailable") ;;
       "tool.${tool}=present | "?*)
         ((${#value} <= ${#tool} + 316)) || {
           diagnostics_raw_contract_failure \
@@ -805,7 +810,7 @@ diagnostics_after_pair_publication_hook() {
 
 publish_diagnostics_archive() (
   local source="${1:-$(diagnostics_raw_directory)}"
-  local final_archive final_checksum staging snapshot archive checksum status=0
+  local final_archive final_checksum staging='' snapshot archive checksum status=0
   local raw_digest snapshot_digest current_digest cp_path
   local publication_complete=false
   invalidate_published_diagnostics || return
@@ -817,20 +822,26 @@ publish_diagnostics_archive() (
   final_checksum="$(prepare_state_file \
     "${DIAGNOSTICS_CHECKSUM_RELATIVE}")" || return
   ensure_state_directory diagnostics || return
-  staging="$(run_host_command mktemp -d \
-    "${PLATFORM_STATE_DIR}/diagnostics/.publish.XXXXXXXX")" || return
   # ShellCheck does not associate nested cleanup functions with EXIT traps.
   # shellcheck disable=SC2317,SC2329
   cleanup() {
     status=$?
+    trap '' HUP INT TERM
     trap - EXIT
-    run_host_command rm -rf -- "${staging}" >/dev/null 2>&1 || status=1
+    if [[ -n "${staging}" ]]; then
+      run_host_command rm -rf -- "${staging}" >/dev/null 2>&1 || status=1
+    fi
     if [[ "${publication_complete}" != true ]]; then
       invalidate_published_diagnostics >/dev/null 2>&1 || status=1
     fi
     builtin exit "${status}"
   }
   trap cleanup EXIT
+  trap 'builtin exit 129' HUP
+  trap 'builtin exit 130' INT
+  trap 'builtin exit 143' TERM
+  staging="$(run_host_command mktemp -d \
+    "${PLATFORM_STATE_DIR}/diagnostics/.publish.XXXXXXXX")" || return
   run_host_command chmod 0700 -- "${staging}" || return
   snapshot="${staging}/raw"
   run_host_command mkdir -- "${snapshot}" || return
@@ -890,5 +901,5 @@ publish_diagnostics_archive() (
   }
   run_host_command rm -rf -- "${staging}" || return
   publication_complete=true
-  trap - EXIT
+  trap - EXIT HUP INT TERM
 )

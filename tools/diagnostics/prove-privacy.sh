@@ -118,8 +118,8 @@ assert_privacy_capture() {
   raw="$(diagnostics_raw_directory)"
   evidence="${raw}/privacy-proof/capture.txt"
   copy="${raw}/privacy-proof/capture-copy.txt"
-  synthetic_home="${PROOF_ROOT}/synthetic-home"
-  ensure_state_directory "${PROOF_RELATIVE}/synthetic-home"
+  synthetic_home="${PROOF_ROOT}/synthetic-home [x] #[]&"
+  ensure_state_directory "${PROOF_RELATIVE}/synthetic-home [x] #[]&"
   builtin printf 'home-sentinel\n' >"${synthetic_home}/sentinel.txt"
 
   HOME="${synthetic_home}" \
@@ -163,7 +163,7 @@ assert_privacy_capture() {
   assert_no_temporary_evidence "${raw}"
   run_host_command grep -Fqx home-sentinel "${synthetic_home}/sentinel.txt"
   unexpected="$(run_host_command find "${synthetic_home}" -mindepth 1 \
-    ! -path "${synthetic_home}/sentinel.txt" -print -quit)"
+    -maxdepth 1 ! -name sentinel.txt -print -quit)"
   if [[ -n "${unexpected}" ]]; then
     builtin printf \
       'FAIL  diagnostics   managed Go wrote through synthetic HOME: %s\n' \
@@ -173,6 +173,30 @@ assert_privacy_capture() {
   builtin printf \
     'PASS  diagnostics   secrets, controls, paths and invalid UTF-8 sanitized deterministically\n'
 }
+
+assert_source_snapshot_prunes_literal_state_paths() (
+  local source first second third
+  source="${PROOF_ROOT}/source [x] #[]&"
+  ensure_state_directory "${PROOF_RELATIVE}/source [x] #[]&/.git"
+  ensure_state_directory "${PROOF_RELATIVE}/source [x] #[]&/.platform"
+  builtin printf 'tracked-one\n' >"${source}/tracked.txt"
+  builtin printf 'git-one\n' >"${source}/.git/canary"
+  builtin printf 'state-one\n' >"${source}/.platform/canary"
+  DIAGNOSTICS_SOURCE_REPOSITORY="${source}"
+  first="$(diagnostics_source_tree_snapshot_digest)"
+  builtin printf 'git-two\n' >"${source}/.git/canary"
+  builtin printf 'state-two\n' >"${source}/.platform/canary"
+  second="$(diagnostics_source_tree_snapshot_digest)"
+  builtin printf 'tracked-two\n' >"${source}/tracked.txt"
+  third="$(diagnostics_source_tree_snapshot_digest)"
+  if [[ "${first}" != "${second}" || "${first}" == "${third}" ]]; then
+    builtin printf \
+      'FAIL  diagnostics   source snapshot pruning is not literal and selective\n' >&2
+    return 1
+  fi
+  builtin printf \
+    'PASS  diagnostics   source snapshot prunes literal Git and state paths\n'
+)
 
 render_compound_secret_platform_summary() {
   local tool compound
@@ -190,7 +214,7 @@ render_compound_secret_platform_summary() {
   builtin printf '%s\n' "${compound}"
   builtin printf 'arch=synthetic\n'
   builtin printf 'privacy=supported-secrets-controls-paths-redacted\n'
-  builtin printf 'tool.go=missing\n'
+  builtin printf 'tool.go=version-unavailable\n'
   for tool in docker kind kubectl shellcheck shfmt actionlint zizmor \
     hadolint trivy kubeconform kube-linter; do
     builtin printf 'tool.%s=missing\n' "${tool}"
@@ -271,6 +295,64 @@ assert_compound_secrets_absent_from_publication() {
     'PASS  diagnostics   compound secret canaries absent from raw ZIP checksum and failure residue\n'
 }
 
+assert_compound_secrets_absent_after_interruption() {
+  local raw archive checksum output ready publisher_pid target_pid
+  local status=0 attempt
+  raw="$(diagnostics_raw_directory)"
+  archive="$(diagnostics_archive_path)"
+  checksum="$(diagnostics_checksum_path)"
+  output="${PROOF_ROOT}/compound-publication-interrupted.log"
+  ready="${PROOF_ROOT}/compound-publication-interrupted.ready"
+
+  prepare_diagnostics_run
+  write_compound_secret_raw_contract
+  (
+    # Called after the final pair exists, before publication is complete.
+    # shellcheck disable=SC2317,SC2329
+    diagnostics_after_pair_publication_hook() {
+      builtin printf '%s\n' "${BASHPID}" >"${ready}"
+      while :; do :; done
+    }
+    publish_diagnostics_archive "${raw}"
+  ) >"${output}" 2>&1 &
+  publisher_pid=$!
+  for ((attempt = 1; attempt <= 500; attempt++)); do
+    [[ ! -s "${ready}" ]] || break
+    builtin kill -0 "${publisher_pid}" 2>/dev/null || break
+    run_host_command sleep 0.01
+  done
+  if [[ ! -s "${ready}" ]]; then
+    builtin kill -KILL "${publisher_pid}" 2>/dev/null || true
+    builtin wait "${publisher_pid}" 2>/dev/null || true
+    builtin printf \
+      'FAIL  diagnostics   compound interruption hook was not reached\n' >&2
+    return 1
+  fi
+  IFS= builtin read -r target_pid <"${ready}" || return
+  [[ "${target_pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  builtin kill -TERM "${target_pid}"
+  builtin wait "${publisher_pid}" 2>/dev/null || status=$?
+  if ((status != 143)) || [[ -e "${archive}" || -L "${archive}" ||
+    -e "${checksum}" || -L "${checksum}" ]]; then
+    builtin printf \
+      'FAIL  diagnostics   compound interruption cleanup status=%s\n' \
+      "${status}" >&2
+    return 1
+  fi
+  run_host_command sleep 0.05
+  if builtin kill -0 "${target_pid}" 2>/dev/null; then
+    builtin printf \
+      'FAIL  diagnostics   interrupted publisher remained live\n' >&2
+    return 1
+  fi
+  assert_compound_canaries_absent "${raw}/platform.txt"
+  assert_compound_canaries_absent "${output}"
+  assert_no_temporary_evidence "${raw}"
+  assert_no_publish_residue
+  builtin printf \
+    'PASS  diagnostics   interrupted compound publication retained no pair or secret residue\n'
+}
+
 assert_hostile_go_environment_is_sealed() {
   local raw evidence hostile_home hostile_tmp hostile_goroot hostile_tools
   local helper marker goenv directory unexpected
@@ -318,7 +400,7 @@ assert_hostile_go_environment_is_sealed() {
   fi
   for directory in "${hostile_home}" "${hostile_tmp}" "${hostile_goroot}"; do
     unexpected="$(run_host_command find "${directory}" -mindepth 1 \
-      ! -path "${directory}/sentinel.txt" -print -quit)"
+      -maxdepth 1 ! -name sentinel.txt -print -quit)"
     if [[ -n "${unexpected}" ]]; then
       builtin printf \
         'FAIL  diagnostics   hostile Go path received a write: %s\n' \
@@ -629,41 +711,173 @@ assert_kubernetes_scope_is_narrow() {
     'PASS  diagnostics   Kubernetes scope is nodes/resources/events/logs only\n'
 }
 
-assert_noisy_version_is_streamed_and_bounded() {
-  local output bytes status=0
+assert_tool_identity_failed_producers() {
+  local output
   output="$({
-    # Called by the exact production first_line implementation.
+    # Called by the exact production inventory implementation.
     # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      builtin printf 'forged-producer42-identity\n'
+      return 42
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   failed producer published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      builtin printf 'forged-timeout-identity\n'
+      return 124
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   timed-out producer published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+}
+
+assert_tool_identity_sanitizer_failures() {
+  local output
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      builtin printf 'forged-sanitizer-failure-identity\n'
+    }
+    sanitize_diagnostics_stream() {
+      run_host_command cat >/dev/null
+      return 19
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   failed sanitizer published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() { return 0; }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   empty producer published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      builtin printf 'forged-malformed-frame-identity\n'
+    }
+    sanitize_diagnostics_stream() {
+      run_host_command cat >/dev/null
+      builtin printf 'sanitizer_status=forged\nforged-malformed-frame-identity\n'
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   malformed sanitizer frame published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      builtin printf 'forged-extra-frame-identity\n'
+    }
+    sanitize_diagnostics_stream() {
+      run_host_command cat >/dev/null
+      builtin printf \
+        'sanitizer_truncated=false\nforged-first-frame\nforged-second-frame\n'
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  [[ "${output}" == 'tool.synthetic=version-unavailable' ]] || {
+    builtin printf \
+      'FAIL  diagnostics   extra sanitizer frame published identity: %q\n' \
+      "${output}" >&2
+    return 1
+  }
+}
+
+assert_tool_identity_bounded_drain() {
+  local output marker="${PROOF_ROOT}/multiline-version-drained"
+  local large_marker="${PROOF_ROOT}/large-version-drained"
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
     diagnostics_tool_identity_command() {
       local index
-      builtin printf 'TOKEN=noisy-version-canary-733'
+      builtin printf 'synthetic tool 1.2.3\n'
+      for ((index = 0; index < 4096; index++)); do
+        builtin printf 'forged-second-line-%s\n' "${index}" || return
+      done
+      builtin printf 'drained\n' >"${marker}"
+    }
+    write_tool_inventory_entry synthetic
+  })"
+  if [[ "${output}" != 'tool.synthetic=present | synthetic tool 1.2.3' ]] ||
+    [[ ! -f "${marker}" || -L "${marker}" ]]; then
+    builtin printf \
+      'FAIL  diagnostics   multiline producer was not bounded and drained: %q\n' \
+      "${output}" >&2
+    return 1
+  fi
+  run_host_command grep -Fqx drained "${marker}"
+
+  output="$({
+    # shellcheck disable=SC2317,SC2329
+    require_tool() { return 0; }
+    diagnostics_tool_identity_command() {
+      local index
+      builtin printf 'TOKEN=large-version-canary-733'
       for ((index = 0; index < 32768; index++)); do
         builtin printf '0123456789abcdef' || return
       done
-      return 73
+      builtin printf 'drained\n' >"${large_marker}"
     }
-    first_line synthetic
-  })" || status=$?
-  bytes="${#output}"
-  if ((status != 0 || bytes < 1 || bytes > 300)); then
+    write_tool_inventory_entry synthetic
+  })"
+  if [[ "${output}" != 'tool.synthetic=version-unavailable' ]] ||
+    [[ ! -f "${large_marker}" || -L "${large_marker}" ]]; then
     builtin printf \
-      'FAIL  diagnostics   noisy version status=%s bytes=%s\n' \
-      "${status}" "${bytes}" >&2
+      'FAIL  diagnostics   oversized producer was not rejected and drained: %q\n' \
+      "${output}" >&2
     return 1
   fi
-  [[ "${output}" == *'<redacted>'* ]] || {
+  run_host_command grep -Fqx drained "${large_marker}"
+  [[ "${output}" != *large-version-canary-733* ]] || {
     builtin printf \
-      'FAIL  diagnostics   noisy version did not retain redaction marker\n' >&2
+      'FAIL  diagnostics   oversized producer retained unsanitized identity\n' >&2
     return 1
   }
-  [[ "${output}" != *'noisy-version-canary-733'* ]] || {
-    builtin printf \
-      'FAIL  diagnostics   noisy version retained unsanitized bytes\n' >&2
-    return 1
-  }
+}
+
+assert_tool_identity_contract() {
+  assert_tool_identity_failed_producers
+  assert_tool_identity_sanitizer_failures
+  assert_tool_identity_bounded_drain
   assert_no_temporary_evidence "$(diagnostics_raw_directory)"
   builtin printf \
-    'PASS  diagnostics   noisy version streamed through bounded single-line sanitizer\n'
+    'PASS  diagnostics   tool identity requires successful producer and exact bounded frame\n'
 }
 
 run_sanitizer_unit_tests() (
@@ -684,6 +898,7 @@ main() {
   prepare_diagnostics_run
   run_sanitizer_unit_tests >/dev/null
   assert_privacy_capture
+  assert_source_snapshot_prunes_literal_state_paths
   assert_hostile_go_environment_is_sealed
   assert_truncation_metadata
   assert_stale_capture_removed
@@ -696,8 +911,9 @@ main() {
   assert_fake_state_host_tool_is_rejected
   assert_missing_sanitizer_does_not_run_go
   assert_kubernetes_scope_is_narrow
-  assert_noisy_version_is_streamed_and_bounded
+  assert_tool_identity_contract
   assert_compound_secrets_absent_from_publication
+  assert_compound_secrets_absent_after_interruption
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
