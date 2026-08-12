@@ -146,5 +146,48 @@ make diagnose
 make artifact-verify ARCHIVE=.platform/platform-diagnostics.zip
 ```
 
-The archive contains bounded Platform fixture diagnostics only. It is not a
-generic product log collector.
+The mutable archive pair represents only the current successful run. A new run
+invalidates the old pair before collecting payload. An overall failed diagnostic
+run leaves no valid current pair. External output is sanitized before its first
+durable write, and Kubernetes payload reads require the exact context and
+checkout-bound ownership. Authorization, query, or concurrent-teardown
+subfailure discards the whole Kubernetes staging directory, but the parent run
+may publish a complete sanitized host/status-only pair.
+
+Live events and timestamps can change. Verify structure, exact manifest, run
+identity, freshness, bounds, and consistency instead of requiring two live ZIPs
+to have equal bytes. This is a narrow Platform fixture collector, not generic
+DLP or a Flare/Poker log collector. Run `make prove-diagnostics` for its exact
+RED fixtures and see `docs/runbooks/diagnostics.md`.
+
+## Repository continuity
+
+```bash
+make prove-recovery
+make recovery-pack OUTPUT=.platform/recovery/capsule
+make recovery-verify CAPSULE=.platform/recovery/capsule
+```
+
+Create a capsule only from the final clean committed named branch. The Make
+targets resolve only a file-type `git` from the exact caller PATH captured before
+project environment publication. Canonical admission rejects lookup, physical,
+or resolved locations inside repository, generated, or lifecycle state and
+passes the absolute executable to the helper. This does not claim
+package-manager, vendor, or root-ownership provenance. Every Git child leads an
+isolated PID/start-time-bound process group; timeout or surviving-descendant
+cleanup uses TERM, poll, KILL, reap, and two-sample absence proof.
+
+The exact three-file capsule restores committed history and verifies branch,
+commit, tree, object format, clean state, and the full object graph. Clean means
+an exact `HEAD`/stage-zero-index match plus pinned raw physical bytes, executable
+state, symlink targets, and one-link tracked leaves; every extra entry outside
+root `.git` and guarded private `.platform` is rejected even when ignored.
+Configured `filter.*` and repository config includes are unsupported. Bundle
+output is capped at 64 MiB, capsule members must be one-link regular files, and
+publication never replaces an existing destination.
+
+Every reachable committed byte is restored, including any accidentally
+committed secret. Local/uncommitted credential stores, source `.git/config`
+remotes/auth, caches, uncommitted files, Docker images, and Kubernetes state are
+not copied as separate workstation state. See
+`docs/runbooks/repository-recovery.md`.

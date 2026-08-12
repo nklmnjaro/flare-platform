@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: Closure-007 candidate implemented; final live and clean replay required
+Status: Closure-007 accepted integration baseline; Task 008 replay required
 
 ## Decision
 
@@ -115,6 +115,27 @@ create-to-marker gap is irreducible without changing kind itself; recovery
 requires an operator to establish container provenance before raw kind cleanup,
 as documented in the runbook.
 
+## Diagnostic read boundary
+
+Diagnostic collection validates the exact context and checkout-bound ownership
+before the first Kubernetes payload read. A foreign checkout receives a fixed
+refusal without workload output. Accepted bytes pass through the bounded
+sanitizer before their first durable write.
+
+The read set is limited to node status and the
+`flare-platform-reference` namespace. It excludes Secrets, ConfigMaps,
+kubeconfig, `describe`, raw object dumps, and arbitrary namespaces. Every run
+has a fresh identity; an overall failed run leaves no current mutable archive
+pair. Live events and timestamps are validated by structure and run consistency,
+not by byte equality between two observations. The normative boundary is
+`docs/contracts/platform-diagnostics-v2.md`.
+
+The collector is read-only and does not extend the mutating lifecycle action
+grammar. If an owned teardown races a query, the bounded collection fails and
+resets the whole Kubernetes staging directory rather than accepting partial
+payload. The parent diagnostic run may still publish a complete sanitized
+host/status-only pair. Only an overall failed run leaves no current pair.
+
 ## Reference fixture
 
 The fixture is a standard-library Go HTTP server built with no third-party
@@ -187,11 +208,16 @@ promotion evidence.
 Closure-007 preserves those historical runtime results and adds checkout-bound
 ownership plus lease-backed lifecycle serialization. Its fixtures retain the
 unsafe pre-lease ownership/delete ordering as RED evidence and require the
-leased ordering as GREEN evidence. The final combined live two-checkout journey,
-bounded concurrency replay, and clean-clone replay have not yet been attached to
-an immutable documentation commit, so present promotion remains unclaimed.
-The candidate boundary is recorded in
+leased ordering as GREEN evidence. Final commit
+`eb6d0f0c027202e78b2b5b35e18473b0079a28dc` and tree
+`95f40069a4d2776494cea35921fa55e32f9ead99` completed the integrated,
+live two-checkout, bounded-concurrency, direct-clone, bundle-clone, and repeated
+runtime replays on 2026-08-12. The earlier candidate record remains historical:
 `docs/evidence/PLATFORM-LOCAL-RUNTIME-ISOLATION-AND-CONCURRENCY-007__20260811.md`.
+
+Task 008 changes the diagnostic read/publication boundary and therefore needs a
+new final live and clean-clone replay. That replay is not claimed by the
+Closure-007 result.
 
 ## Non-goals
 

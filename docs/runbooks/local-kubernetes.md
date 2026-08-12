@@ -111,10 +111,24 @@ make diagnose
 make artifact-verify ARCHIVE=.platform/platform-diagnostics.zip
 ```
 
-The archive is deterministic, checksum-verifiable, and bounded. Each Kubernetes
-capture is capped while the command is running, rather than after an unbounded
-temporary dump. Captures are limited to the Platform reference namespace plus
-node status. This is not a generic Flare/Poker log collector.
+The archive is checksum-verifiable and bounded. The exact context and
+checkout-bound ownership are accepted before the first Kubernetes payload
+read. A foreign checkout yields a fixed refusal and no workload output. Every
+accepted stream is sanitized and capped before its first durable write.
+Captures are limited to node status and the Platform reference namespace;
+Secrets, ConfigMaps, kubeconfig, `describe`, raw object dumps, and arbitrary
+namespaces are excluded. The read-only collector does not acquire the mutating
+lifecycle lease. A teardown race causes bounded failure and whole-staging reset,
+not partial Kubernetes payload. The parent run may still publish a complete
+sanitized host/status-only pair.
+
+The mutable ZIP/SHA pair represents only the current successful run and is
+invalidated before a new collection. Only an overall failed diagnostic run
+leaves no current pair.
+Live events and timestamps may change archive bytes, so verify canonical
+structure, exact manifest, run identity, freshness, and internal consistency
+instead of comparing two live ZIP hashes. See
+`docs/contracts/platform-diagnostics-v2.md`.
 
 A failed namespace query is not treated as successful deletion. A failed final
 cluster teardown also keeps `make verify-runtime` red.
