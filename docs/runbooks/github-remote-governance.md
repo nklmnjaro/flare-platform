@@ -1,6 +1,12 @@
 # GitHub remote governance: безопасный профиль активации
 
-Статус: готово к применению после получения точного organization/repository, visibility и разрешения на remote mutation.
+Статус на 2026-08-15: частично применено к приватному
+`nklmnjaro/flare-platform`. `origin/main` опубликован, а Platform CI
+`31904226260` прошёл `static` и `kind-smoke` на
+`da420c160f5d68eda7acea0dea7b7998062301e2`. Branch protection и rulesets не
+доступны: GitHub API требует GitHub Pro либо public visibility. Поэтому `main`
+пока не защищён сервером; менять visibility или тариф без отдельного решения
+владельца запрещено.
 
 ## 1. Preflight до любого remote action
 
@@ -21,6 +27,11 @@ visibility по предположению.
 ## 2. Repository baseline
 
 После первого push и первого успешного CI run настроить ruleset или branch protection для `main`:
+
+Первый push и успешные checks уже выполнены. На текущем private-плане таблица
+ниже остаётся целевым контрактом, а не фактическим enforcement: API отвечает
+`403`, поэтому PR requirement, required checks и запреты force-push/delete не
+применены. Успешный CI run нельзя называть обязательной защитой ветки.
 
 | Setting | Baseline |
 | --- | --- |
@@ -112,7 +123,8 @@ Remote setting screenshots не являются единственным eviden
 
 ## 9. Явно отложено
 
-- remote repository creation/push;
+- branch protection или repository ruleset после явного решения о GitHub Pro
+  либо public visibility;
 - organization ruleset rollout;
 - merge queue;
 - release/tag ruleset;
