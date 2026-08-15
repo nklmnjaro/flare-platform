@@ -73,6 +73,24 @@ make artifact-verify ARCHIVE=.platform/platform-diagnostics.zip
 lease-границу; не удаляйте её вслепую, используйте сообщение команды и
 `docs/runbooks/local-kubernetes.md`.
 
+`make doctor` остаётся read-only и поэтому не создаёт тестовый контейнер для
+проверки Docker port publishing. Если kind сообщает Ready, а первый `kubectl`
+получает повторяемый `EOF`/connection reset, сравните API внутри node и через
+host port. Такой кластер намеренно остаётся без автоматического удаления, пока
+ownership marker не опубликован. Не удаляйте его по одному имени: сначала
+сверьте отсутствие кластера до запуска, exact kind labels, pinned image и время
+создания. Только подтверждённый fixture текущего запуска можно убрать
+операторской командой:
+
+```bash
+tools/common/run-managed-tool.sh kind delete cluster --name flare-platform-dev
+```
+
+После этого докажите `No kind clusters found` через `kind get clusters`. Если
+обычный bounded HTTP-контейнер через `docker run -p 127.0.0.1::PORT` также
+получает reset при живом внутреннем сервисе, чините host Docker dataplane; не
+ослабляйте kube ownership или TLS ради зелёного результата.
+
 Безопасное завершение только принадлежащего checkout кластера:
 
 ```bash
