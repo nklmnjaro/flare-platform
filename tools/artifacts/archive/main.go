@@ -55,10 +55,7 @@ func runVerify(arguments []string, output io.Writer) error {
 	if *archive == "" {
 		return errors.New("verify requires --archive")
 	}
-	if err := verifyArchive(*archive); err != nil {
-		return err
-	}
-	if err := verifyDetachedChecksum(*archive); err != nil {
+	if err := verifyArchivePairWithLimits(*archive, defaultLimits); err != nil {
 		return err
 	}
 	fmt.Fprintln(output, "PASS  artifact      verified")

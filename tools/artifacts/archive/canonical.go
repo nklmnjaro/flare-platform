@@ -17,14 +17,9 @@ type canonicalComparingWriter struct {
 	buffer []byte
 }
 
-func verifyCanonicalEncoding(path string, entries []archiveEntry) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+func verifyCanonicalEncodingOpenFile(file *os.File, size int64, entries []archiveEntry) error {
 	comparer := canonicalComparingWriter{
-		source: bufio.NewReaderSize(file, compareBufferBytes),
+		source: bufio.NewReaderSize(io.NewSectionReader(file, 0, size), compareBufferBytes),
 		buffer: make([]byte, compareBufferBytes),
 	}
 	if err := writeZip(&comparer, entries); err != nil {

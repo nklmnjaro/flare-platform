@@ -48,7 +48,7 @@ func canonicalOutputPath(root, output string) (string, error) {
 	if err := ensureOutputOutsideSource(root, target); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := ensureArchiveDirectoryPath(filepath.Dir(target), 0o755); err != nil {
 		return "", err
 	}
 	if err := validatePublishTarget(target); err != nil {

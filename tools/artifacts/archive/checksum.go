@@ -8,20 +8,29 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 const maxDetachedChecksumBytes = 512
 
-func verifyDetachedChecksum(path string) error {
-	if err := validateVerificationInput(path); err != nil {
+func verifyDetachedChecksum(path string) (resultErr error) {
+	pair, err := openArchiveVerificationPair(path)
+	if err != nil {
 		return err
 	}
-	if err := validateVerificationInput(path + ".sha256"); err != nil {
-		return fmt.Errorf("detached checksum: %w", err)
+	defer func() { resultErr = errors.Join(resultErr, pair.close()) }()
+	if err := verifyDetachedChecksumOpenFiles(
+		pair.archive,
+		pair.checksum,
+		pair.archiveName,
+	); err != nil {
+		return err
 	}
-	data, err := readSmallFile(path+".sha256", maxDetachedChecksumBytes)
+	return pair.verifyNames()
+}
+
+func verifyDetachedChecksumOpenFiles(archive, checksum *os.File, archiveName string) error {
+	data, err := readSmallOpenFile(checksum, maxDetachedChecksumBytes)
 	if err != nil {
 		return fmt.Errorf("detached checksum: %w", err)
 	}
@@ -29,10 +38,10 @@ func verifyDetachedChecksum(path string) error {
 	if err != nil {
 		return err
 	}
-	if parts[1] != filepath.Base(path) {
+	if parts[1] != archiveName {
 		return errors.New("detached checksum filename does not match archive")
 	}
-	actual, err := hashFile(path)
+	actual, err := hashOpenFile(archive)
 	if err != nil {
 		return err
 	}
@@ -40,6 +49,10 @@ func verifyDetachedChecksum(path string) error {
 		return errors.New("detached archive checksum mismatch")
 	}
 	return nil
+}
+
+func detachedChecksumData(digest, archiveName string) []byte {
+	return []byte(fmt.Sprintf("%s  %s\n", digest, archiveName))
 }
 
 func parseDetachedChecksum(data []byte) ([2]string, error) {
@@ -56,61 +69,44 @@ func parseDetachedChecksum(data []byte) ([2]string, error) {
 	return result, nil
 }
 
-func writeDetachedChecksum(path string) error {
-	digest, err := hashFile(path)
-	if err != nil {
-		return err
-	}
-	line := fmt.Sprintf("%s  %s\n", digest, filepath.Base(path))
-	return writeAtomicFile(path+".sha256", []byte(line), 0o644)
-}
-
-func hashFile(path string) (string, error) {
-	file, err := os.Open(path)
+func hashOpenFile(file *os.File) (string, error) {
+	before, err := archiveState(file)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	reader := io.NewSectionReader(file, 0, before.size)
+	if _, err := io.Copy(hash, reader); err != nil {
 		return "", err
+	}
+	after, err := archiveState(file)
+	if err != nil {
+		return "", err
+	}
+	if !sameStableArchiveFile(before, after) {
+		return "", errors.New("archive changed while it was hashed")
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func readSmallFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+func readSmallOpenFile(file *os.File, limit int64) ([]byte, error) {
+	before, err := archiveState(file)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	data, err := io.ReadAll(io.LimitReader(io.NewSectionReader(file, 0, before.size), limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
-	return data, nil
-}
-
-func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
-	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	after, err := archiveState(file)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	temporary := file.Name()
-	defer os.Remove(temporary)
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
+	if !sameStableArchiveFile(before, after) {
+		return nil, errors.New("checksum changed while it was read")
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := closeSynced(file); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
+	return data, nil
 }

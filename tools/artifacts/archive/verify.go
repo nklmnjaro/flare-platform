@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"syscall"
 )
 
 type archiveReadResult struct {
@@ -24,25 +25,59 @@ func verifyArchive(path string) error {
 	return verifyArchiveWithLimits(path, defaultLimits)
 }
 
-func verifyArchiveWithLimits(path string, limits archiveLimits) error {
+func verifyArchivePairWithLimits(path string, limits archiveLimits) (resultErr error) {
+	pair, err := openArchiveVerificationPair(path)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, pair.close()) }()
+	if err := pair.verifyNames(); err != nil {
+		return err
+	}
+	if err := verifyArchiveOpenFileWithLimits(pair.archive, limits); err != nil {
+		return err
+	}
+	archiveFilesystemBarrier(archiveBarrierVerificationArchiveRead)
+	if err := verifyDetachedChecksumOpenFiles(
+		pair.archive,
+		pair.checksum,
+		pair.archiveName,
+	); err != nil {
+		return err
+	}
+	return pair.verifyNames()
+}
+
+func verifyArchiveWithLimits(path string, limits archiveLimits) (resultErr error) {
 	if err := validateVerificationInput(path); err != nil {
 		return err
 	}
+	file, err := openArchiveRegularPath(path)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	return verifyArchiveOpenFileWithLimits(file, limits)
+}
+
+func verifyArchiveOpenFileWithLimits(file *os.File, limits archiveLimits) error {
 	if err := limits.validate(); err != nil {
 		return err
 	}
-	info, err := os.Stat(path)
+	before, err := archiveState(file)
 	if err != nil {
 		return err
 	}
-	if info.Size() > limits.maxArchiveBytes {
+	if archiveFileType(before) != syscall.S_IFREG {
+		return errors.New("verification input is not a regular file")
+	}
+	if before.size > limits.maxArchiveBytes {
 		return fmt.Errorf("archive exceeds %d bytes", limits.maxArchiveBytes)
 	}
-	reader, err := zip.OpenReader(path)
+	reader, err := zip.NewReader(file, before.size)
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
 	if reader.Comment != "" {
 		return errors.New("archive comment is not allowed")
 	}
@@ -57,7 +92,17 @@ func verifyArchiveWithLimits(path string, limits archiveLimits) error {
 	if err := compareManifest(result.files, expected); err != nil {
 		return err
 	}
-	return verifyCanonicalEncoding(path, result.entries)
+	if err := verifyCanonicalEncodingOpenFile(file, before.size, result.entries); err != nil {
+		return err
+	}
+	after, err := archiveState(file)
+	if err != nil {
+		return err
+	}
+	if !sameStableArchiveFile(before, after) {
+		return errors.New("archive changed while it was verified")
+	}
+	return nil
 }
 
 func readArchive(files []*zip.File, limits archiveLimits) (archiveReadResult, error) {

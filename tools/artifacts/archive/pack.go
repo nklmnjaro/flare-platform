@@ -2,15 +2,17 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 type archiveEntry struct {
@@ -23,46 +25,165 @@ func packDirectory(source, output string) error {
 	return packDirectoryWithLimits(source, output, defaultLimits)
 }
 
-func packDirectoryWithLimits(source, output string, limits archiveLimits) error {
+func packDirectoryWithLimits(source, output string, limits archiveLimits) (resultErr error) {
 	if err := limits.validate(); err != nil {
 		return err
 	}
-	root, err := canonicalSourceRoot(source)
+	rootPath, root, err := openPinnedArchiveSource(source)
+	if err != nil {
+		return fmt.Errorf("pin source directory: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+
+	target, err := canonicalOutputPath(rootPath, output)
 	if err != nil {
 		return err
 	}
-	target, err := canonicalOutputPath(root, output)
+	destination, err := prepareArchiveDestination(target)
 	if err != nil {
 		return err
 	}
+	defer func() { resultErr = errors.Join(resultErr, destination.parent.Close()) }()
+	if err := ensurePinnedArchiveOutputOutsideSource(root, destination.parent); err != nil {
+		return err
+	}
+
 	entries, err := collectEntries(root, limits)
 	if err != nil {
 		return err
 	}
-	manifest := manifestEntry(entries)
-	if int64(len(manifest.data)) > limits.maxManifestBytes {
-		return fmt.Errorf("archive manifest exceeds %d bytes", limits.maxManifestBytes)
-	}
-	entries = append(entries, manifest)
-	if err := publishArchive(target, entries, limits); err != nil {
+	archiveStage, digest, err := buildArchiveStage(destination, entries, limits)
+	if err != nil {
 		return err
 	}
-	if err := writeDetachedChecksum(target); err != nil {
+	defer func() { resultErr = errors.Join(resultErr, archiveStage.closeAndDiscard()) }()
+	checksumStage, err := buildChecksumStage(destination, digest)
+	if err != nil {
 		return err
 	}
-	if err := verifyDetachedChecksum(target); err != nil {
-		return fmt.Errorf("detached checksum self-verification failed: %w", err)
+	defer func() { resultErr = errors.Join(resultErr, checksumStage.closeAndDiscard()) }()
+
+	if err := archiveStage.publish(destination.archiveName, archiveBarrierBeforeArchivePublish); err != nil {
+		return err
 	}
-	return nil
+	if err := checksumStage.publish(destination.checksumName, archiveBarrierBeforeChecksumPublish); err != nil {
+		return err
+	}
+	return verifyPublishedArchivePair(destination, archiveStage, checksumStage, digest, limits)
 }
 
-func collectEntries(root string, limits archiveLimits) ([]archiveEntry, error) {
+func verifyPublishedArchivePair(
+	destination *archiveDestination,
+	archiveStage *stagedArchiveFile,
+	checksumStage *stagedArchiveFile,
+	expectedDigest string,
+	limits archiveLimits,
+) error {
+	archiveFilesystemBarrier(archiveBarrierBeforePairVerification)
+	if err := destination.verifyNamedParent(); err != nil {
+		return err
+	}
+	if err := archiveStage.ensureNamed(); err != nil {
+		return fmt.Errorf("published archive: %w", err)
+	}
+	if err := checksumStage.ensureNamed(); err != nil {
+		return fmt.Errorf("published checksum: %w", err)
+	}
+	if err := verifyArchiveOpenFileWithLimits(archiveStage.file, limits); err != nil {
+		return fmt.Errorf("published archive self-verification failed: %w", err)
+	}
+	if err := verifyDetachedChecksumOpenFiles(
+		archiveStage.file,
+		checksumStage.file,
+		destination.archiveName,
+	); err != nil {
+		return fmt.Errorf("detached checksum self-verification failed: %w", err)
+	}
+	actualDigest, err := hashOpenFile(archiveStage.file)
+	if err != nil {
+		return err
+	}
+	if actualDigest != expectedDigest {
+		return errors.New("published archive differs from the collected source")
+	}
+	actualChecksum, err := readSmallOpenFile(checksumStage.file, maxDetachedChecksumBytes)
+	if err != nil {
+		return err
+	}
+	expectedChecksum := detachedChecksumData(expectedDigest, destination.archiveName)
+	if !bytes.Equal(actualChecksum, expectedChecksum) {
+		return errors.New("published checksum differs from the sealed checksum")
+	}
+	if err := archiveStage.ensureNamed(); err != nil {
+		return fmt.Errorf("published archive: %w", err)
+	}
+	if err := checksumStage.ensureNamed(); err != nil {
+		return fmt.Errorf("published checksum: %w", err)
+	}
+	return destination.verifyNamedParent()
+}
+
+func buildArchiveStage(
+	destination *archiveDestination,
+	entries []archiveEntry,
+	limits archiveLimits,
+) (_ *stagedArchiveFile, _ string, resultErr error) {
+	manifest := manifestEntry(entries)
+	if int64(len(manifest.data)) > limits.maxManifestBytes {
+		return nil, "", fmt.Errorf("archive manifest exceeds %d bytes", limits.maxManifestBytes)
+	}
+	stage, err := destination.createStagedFile("zip")
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, stage.closeAndDiscard())
+		}
+	}()
+	if err := writeZip(stage.file, append(entries, manifest)); err != nil {
+		return nil, "", err
+	}
+	if err := stage.seal(0o644); err != nil {
+		return nil, "", err
+	}
+	if err := verifyArchiveOpenFileWithLimits(stage.file, limits); err != nil {
+		return nil, "", fmt.Errorf("archive self-verification failed: %w", err)
+	}
+	digest, err := hashOpenFile(stage.file)
+	if err != nil {
+		return nil, "", err
+	}
+	return stage, digest, nil
+}
+
+func buildChecksumStage(
+	destination *archiveDestination,
+	digest string,
+) (_ *stagedArchiveFile, resultErr error) {
+	stage, err := destination.createStagedFile("sha256")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, stage.closeAndDiscard())
+		}
+	}()
+	checksum := detachedChecksumData(digest, destination.archiveName)
+	if _, err := stage.file.Write(checksum); err != nil {
+		return nil, err
+	}
+	if err := stage.seal(0o644); err != nil {
+		return nil, err
+	}
+	return stage, nil
+}
+
+func collectEntries(root *os.File, limits archiveLimits) ([]archiveEntry, error) {
 	var entries []archiveEntry
 	var payloadBytes int64
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		return collectPath(root, path, entry, walkErr, limits, &payloadBytes, &entries)
-	})
-	if err != nil {
+	if err := collectDirectory(root, "", limits, &payloadBytes, &entries); err != nil {
 		return nil, err
 	}
 	if len(entries) == 0 {
@@ -72,74 +193,170 @@ func collectEntries(root string, limits archiveLimits) ([]archiveEntry, error) {
 	return entries, nil
 }
 
-func collectPath(
-	root string,
-	path string,
-	entry fs.DirEntry,
-	walkErr error,
+func collectDirectory(
+	directory *os.File,
+	prefix string,
 	limits archiveLimits,
 	payloadBytes *int64,
 	entries *[]archiveEntry,
 ) error {
-	if walkErr != nil {
-		return walkErr
+	before, err := archiveState(directory)
+	if err != nil {
+		return err
 	}
-	if path == root || entry.IsDir() {
-		return nil
+	names, err := directory.Readdirnames(-1)
+	if err != nil {
+		return err
 	}
+	sort.Strings(names)
+	for _, name := range names {
+		relative := name
+		if prefix != "" {
+			relative = prefix + "/" + name
+		}
+		if err := collectSourceEntry(
+			directory, name, relative, limits, payloadBytes, entries,
+		); err != nil {
+			return err
+		}
+	}
+	after, err := archiveState(directory)
+	if err != nil {
+		return err
+	}
+	if !sameStableArchiveFile(before, after) {
+		return fmt.Errorf("source directory %s changed while being collected", sourceDisplayName(prefix))
+	}
+	return nil
+}
+
+func collectSourceEntry(
+	directory *os.File,
+	name string,
+	relative string,
+	limits archiveLimits,
+	payloadBytes *int64,
+	entries *[]archiveEntry,
+) (resultErr error) {
+	if err := validateArchivePath(relative, limits.maxPathBytes); err != nil {
+		return err
+	}
+	reference, referenceState, err := inspectSourceEntry(directory, name, relative)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, reference.Close()) }()
+	archiveFilesystemBarrier(archiveBarrierSourceEntryPinned)
+	switch archiveFileType(referenceState) {
+	case syscall.S_IFDIR:
+		return collectSourceSubdirectory(
+			directory, name, relative, referenceState, limits, payloadBytes, entries,
+		)
+	case syscall.S_IFREG:
+		return collectSourceRegularFile(
+			directory, name, relative, referenceState, limits, payloadBytes, entries,
+		)
+	default:
+		return fmt.Errorf("special files are not allowed in durable artifacts: %s", relative)
+	}
+}
+
+func inspectSourceEntry(
+	directory *os.File,
+	name string,
+	relative string,
+) (*os.File, archiveFileState, error) {
+	reference, err := openArchivePathReference(directory, name)
+	if err != nil {
+		return nil, archiveFileState{}, fmt.Errorf("inspect source entry %s: %w", relative, err)
+	}
+	state, err := archiveState(reference)
+	if err != nil {
+		_ = reference.Close()
+		return nil, archiveFileState{}, err
+	}
+	if archiveFileType(state) == syscall.S_IFLNK {
+		_ = reference.Close()
+		return nil, archiveFileState{}, fmt.Errorf(
+			"symlinks are not allowed in durable artifacts: %s", relative,
+		)
+	}
+	return reference, state, nil
+}
+
+func collectSourceSubdirectory(
+	directory *os.File,
+	name string,
+	relative string,
+	referenceState archiveFileState,
+	limits archiveLimits,
+	payloadBytes *int64,
+	entries *[]archiveEntry,
+) error {
+	child, err := openArchiveDirectoryAt(directory, name)
+	if err != nil {
+		return fmt.Errorf("source directory %s changed while being opened: %w", relative, err)
+	}
+	openedState, stateErr := archiveState(child)
+	if stateErr != nil || !sameStableArchiveFile(referenceState, openedState) {
+		_ = child.Close()
+		if stateErr != nil {
+			return stateErr
+		}
+		return fmt.Errorf("source directory %s changed while being opened", relative)
+	}
+	collectErr := collectDirectory(child, relative, limits, payloadBytes, entries)
+	return errors.Join(collectErr, child.Close())
+}
+
+func collectSourceRegularFile(
+	directory *os.File,
+	name string,
+	relative string,
+	referenceState archiveFileState,
+	limits archiveLimits,
+	payloadBytes *int64,
+	entries *[]archiveEntry,
+) error {
 	if len(*entries) >= limits.maxEntries {
 		return fmt.Errorf("archive entry count exceeds %d", limits.maxEntries)
 	}
-	info, err := entry.Info()
+	file, err := openArchiveRegularAt(directory, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("source file %s changed while being opened: %w", relative, err)
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return fmt.Errorf("symlinks are not allowed in durable artifacts: %s", path)
+	openedState, stateErr := archiveState(file)
+	if stateErr != nil || !sameStableArchiveFile(referenceState, openedState) {
+		_ = file.Close()
+		if stateErr != nil {
+			return stateErr
+		}
+		return fmt.Errorf("source file %s changed while being opened", relative)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("special files are not allowed in durable artifacts: %s", path)
-	}
-	name, err := archiveEntryName(root, path, limits.maxPathBytes)
-	if err != nil {
-		return err
-	}
-	data, err := readSourceFile(path, limits.maxEntryBytes)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", name, err)
+	data, readErr := readPinnedSourceFile(file, openedState, limits.maxEntryBytes)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return fmt.Errorf("read %s: %w", relative, errors.Join(readErr, closeErr))
 	}
 	if int64(len(data)) > limits.maxPayloadBytes-*payloadBytes {
 		return fmt.Errorf("archive payload exceeds %d bytes", limits.maxPayloadBytes)
 	}
 	if containsHomePath(data) {
-		return fmt.Errorf("absolute workstation home path detected in %s", name)
+		return fmt.Errorf("absolute workstation home path detected in %s", relative)
+	}
+	if relative == manifestName {
+		return fmt.Errorf("source must not contain reserved file %s", manifestName)
 	}
 	*payloadBytes += int64(len(data))
-	*entries = append(*entries, archiveEntry{name: name, data: data, mode: normalizedMode(info.Mode())})
+	*entries = append(*entries, archiveEntry{
+		name: relative,
+		data: data,
+		mode: normalizedMode(archiveFileMode(openedState)),
+	})
 	return nil
 }
 
-func archiveEntryName(root, path string, maxPathBytes int) (string, error) {
-	relative, err := filepath.Rel(root, path)
-	if err != nil {
-		return "", err
-	}
-	name := filepath.ToSlash(relative)
-	if err := validateArchivePath(name, maxPathBytes); err != nil {
-		return "", err
-	}
-	if name == manifestName {
-		return "", fmt.Errorf("source must not contain reserved file %s", manifestName)
-	}
-	return name, nil
-}
-
-func readSourceFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+func readPinnedSourceFile(file *os.File, before archiveFileState, limit int64) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
@@ -147,7 +364,22 @@ func readSourceFile(path string, limit int64) ([]byte, error) {
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
+	archiveFilesystemBarrier(archiveBarrierSourceFileRead)
+	after, err := archiveState(file)
+	if err != nil {
+		return nil, err
+	}
+	if !sameStableArchiveFile(before, after) {
+		return nil, errors.New("source file changed while being read")
+	}
 	return data, nil
+}
+
+func sourceDisplayName(prefix string) string {
+	if prefix == "" {
+		return "."
+	}
+	return prefix
 }
 
 func manifestEntry(entries []archiveEntry) archiveEntry {
@@ -157,49 +389,6 @@ func manifestEntry(entries []archiveEntry) archiveEntry {
 		fmt.Fprintf(&manifest, "%s  %s\n", hex.EncodeToString(digest[:]), entry.name)
 	}
 	return archiveEntry{name: manifestName, data: []byte(manifest.String()), mode: 0o644}
-}
-
-func publishArchive(output string, entries []archiveEntry, limits archiveLimits) error {
-	temporary, err := createTemporary(output)
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-
-	writeErr := writeZip(temporary, entries)
-	closeErr := closeSynced(temporary)
-	if writeErr != nil {
-		return writeErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	if err := verifyArchiveWithLimits(temporaryName, limits); err != nil {
-		return fmt.Errorf("archive self-verification failed: %w", err)
-	}
-	return os.Rename(temporaryName, output)
-}
-
-func createTemporary(output string) (*os.File, error) {
-	file, err := os.CreateTemp(filepath.Dir(output), "."+filepath.Base(output)+".tmp-*")
-	if err != nil {
-		return nil, err
-	}
-	if err := file.Chmod(0o644); err != nil {
-		_ = file.Close()
-		_ = os.Remove(file.Name())
-		return nil, err
-	}
-	return file, nil
-}
-
-func closeSynced(file *os.File) error {
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
 }
 
 func writeZip(target io.Writer, entries []archiveEntry) error {
