@@ -13,9 +13,11 @@ builtin export -n AQUA_VERSION AQUA_SHA256 AQUA_BIN_SHA256 AQUA_PROXY_BIN_SHA256
   AQUA_ARCHIVE AQUA_URL AQUA_BOOTSTRAP_DIR AQUA_BIN \
   AQUA_CHECKSUM_FILE \
   AQUA_TRUST_SHA256SUM AQUA_TRUST_READLINK AQUA_TRUST_TIMEOUT \
+  AQUA_TRUST_EXEC_FD AQUA_TRUST_EXEC_PATH \
   AQUA_CANDIDATE_MISSING AQUA_CANDIDATE_UNSAFE_TYPE \
   AQUA_CANDIDATE_NOT_EXECUTABLE AQUA_CANDIDATE_HASH_MISMATCH 2>/dev/null ||
   builtin true
+builtin unset AQUA_TRUST_EXEC_FD AQUA_TRUST_EXEC_PATH
 builtin readonly AQUA_VERSION="2.62.3"
 builtin readonly AQUA_SHA256="89cb081adb19e425b1dca6b16d912c349a43535ce88d8713050738c9263618d0"
 builtin readonly AQUA_BIN_SHA256="e3e28482e8a0ef5258cf273e87b3f0cb72e50cb2c9f52d6a10fc8270f5571e5f"
@@ -92,10 +94,101 @@ aqua_validate_execution_arguments() {
   builtin local target="${1:-}"
   if [[ -z "${target}" || "${target}" != /* || "${target}" == *$'\n'* ||
     "${target}" == *$'\r'* || "${target}" == *$'\t'* ||
-    ! -f "${target}" || ! -x "${target}" ]]; then
+    -L "${target}" || ! -f "${target}" || ! -x "${target}" ]]; then
     builtin printf 'FAIL  aqua-trust    exact executable target is required\n' >&2
     builtin return "${HOST_COMMAND_USAGE_STATUS}"
   fi
+}
+
+aqua_close_verified_execution() {
+  if [[ "${AQUA_TRUST_EXEC_FD:-}" =~ ^[0-9]+$ ]]; then
+    builtin exec {AQUA_TRUST_EXEC_FD}<&- 2>/dev/null || builtin true
+  fi
+  builtin unset AQUA_TRUST_EXEC_FD AQUA_TRUST_EXEC_PATH
+}
+
+# Admit the exact pinned Aqua bytes through an open descriptor. The descriptor
+# remains the execution target, so replacing the pathname after the checksum
+# cannot redirect this invocation to different bytes. This is not a same-UID
+# sandbox: an equally privileged process can still modify process-owned state.
+aqua_open_verified_execution() {
+  builtin local target="${1:-}"
+  builtin local root_identity path_before path_after descriptor_before
+  builtin local descriptor_after descriptor_owner descriptor_mode
+  aqua_close_verified_execution
+  aqua_validate_execution_arguments "${target}" || builtin return
+  case "${target}" in
+    "${PLATFORM_STATE_DIR}"/*) ;;
+    *)
+      builtin printf \
+        'FAIL  aqua-trust    Aqua executable must stay in private project state\n' \
+        >&2
+      builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+      ;;
+  esac
+  root_identity="$(state_root_security_snapshot "${PLATFORM_STATE_DIR}")" ||
+    builtin return
+  if ! builtin exec {AQUA_TRUST_EXEC_FD}<"${target}"; then
+    builtin printf 'FAIL  aqua-trust    unable to pin Aqua executable\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  fi
+  AQUA_TRUST_EXEC_PATH="/proc/self/fd/${AQUA_TRUST_EXEC_FD}"
+  if [[ ! -e "${AQUA_TRUST_EXEC_PATH}" || ! -f "${AQUA_TRUST_EXEC_PATH}" ||
+    ! -x "${AQUA_TRUST_EXEC_PATH}" ]]; then
+    builtin printf \
+      'FAIL  aqua-trust    pinned Aqua descriptor is unavailable or unsafe\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  fi
+  descriptor_before="$(run_host_command stat -Lc '%d:%i:%u:%a' -- \
+    "${AQUA_TRUST_EXEC_PATH}")" || {
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  }
+  path_before="$(run_host_command stat -Lc '%d:%i:%u:%a' -- "${target}")" || {
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  }
+  IFS=: builtin read -r _ _ descriptor_owner descriptor_mode \
+    <<<"${descriptor_before}"
+  if [[ "${descriptor_before}" != "${path_before}" ||
+    "${descriptor_owner}" != "${EUID}" ||
+    ! "${descriptor_mode}" =~ ^0?[0-7]{3}$ ||
+    $((8#${descriptor_mode} & 0022)) -ne 0 ]]; then
+    builtin printf \
+      'FAIL  aqua-trust    Aqua executable identity or ownership is unsafe\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  fi
+  if ! aqua_file_sha256_matches \
+    "${AQUA_BIN_SHA256}" "${AQUA_TRUST_EXEC_PATH}"; then
+    builtin printf 'FAIL  aqua-trust    pinned Aqua integrity mismatch\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  fi
+  descriptor_after="$(run_host_command stat -Lc '%d:%i:%u:%a' -- \
+    "${AQUA_TRUST_EXEC_PATH}")" || {
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  }
+  path_after="$(run_host_command stat -Lc '%d:%i:%u:%a' -- "${target}")" || {
+    builtin printf \
+      'FAIL  aqua-trust    Aqua pathname changed during admission\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  }
+  if [[ "${descriptor_after}" != "${descriptor_before}" ||
+    "${path_after}" != "${descriptor_before}" ]]; then
+    builtin printf \
+      'FAIL  aqua-trust    Aqua pathname changed during admission\n' >&2
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  fi
+  assert_state_root_identity "${PLATFORM_STATE_DIR}" "${root_identity}" || {
+    aqua_close_verified_execution
+    builtin return "${HOST_COMMAND_UNTRUSTED_STATUS}"
+  }
 }
 
 aqua_validate_bounded_duration() {
@@ -152,6 +245,22 @@ run_project_aqua_bounded() {
     "${max_time}" "${target}" required "$@"
 }
 
+run_verified_aqua_bounded_with_checksum_mode() (
+  builtin local max_time="${1:-}" target="${2:-}" checksum_mode="${3:-}"
+  (($# >= 3)) || {
+    builtin printf \
+      'FAIL  aqua-trust    timeout, Aqua target and checksum mode are required\n' \
+      >&2
+    builtin return "${HOST_COMMAND_USAGE_STATUS}"
+  }
+  builtin shift 3
+  aqua_validate_bounded_duration "${max_time}" || builtin return
+  aqua_open_verified_execution "${target}" || builtin return
+  aqua_prepare_normal_environment "${checksum_mode}" || builtin return
+  builtin exec "${AQUA_TRUST_TIMEOUT}" --signal=TERM --kill-after=2s \
+    "${max_time}" "${AQUA_TRUST_EXEC_PATH}" "$@"
+)
+
 run_project_aqua_command() (
   builtin local command_name="${1:-}"
   (($# > 0)) || {
@@ -164,8 +273,9 @@ run_project_aqua_command() (
       "${command_name}" >&2
     builtin return "${HOST_COMMAND_USAGE_STATUS}"
   fi
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment || builtin return
-  builtin exec "${AQUA_BIN}" exec -- "${command_name}" "$@"
+  builtin exec "${AQUA_TRUST_EXEC_PATH}" exec -- "${command_name}" "$@"
 )
 
 run_project_aqua_command_bounded() (
@@ -182,9 +292,10 @@ run_project_aqua_command_bounded() (
       "${command_name}" >&2
     builtin return "${HOST_COMMAND_USAGE_STATUS}"
   fi
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment || builtin return
   builtin exec "${AQUA_TRUST_TIMEOUT}" --signal=TERM --kill-after=2s \
-    "${duration}" "${AQUA_BIN}" exec -- "${command_name}" "$@"
+    "${duration}" "${AQUA_TRUST_EXEC_PATH}" exec -- "${command_name}" "$@"
 )
 
 # Tail-exec API for a caller that already owns an isolated process group.
@@ -202,9 +313,10 @@ exec_project_aqua_command_bounded() {
       "${command_name}" >&2
     builtin return "${HOST_COMMAND_USAGE_STATUS}"
   fi
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment || builtin return
   builtin exec "${AQUA_TRUST_TIMEOUT}" --signal=TERM --kill-after=2s \
-    "${duration}" "${AQUA_BIN}" exec -- "${command_name}" "$@"
+    "${duration}" "${AQUA_TRUST_EXEC_PATH}" exec -- "${command_name}" "$@"
 }
 
 run_project_aqua_observation_bounded() (
@@ -222,11 +334,11 @@ run_project_aqua_observation_bounded() (
       'FAIL  aqua-trust    cached Aqua changed before observation\n' >&2
     builtin return 1
   }
-  aqua_validate_execution_arguments "${AQUA_BIN}" || builtin return
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment required "${observation_root}" ||
     builtin return
   builtin exec "${AQUA_TRUST_TIMEOUT}" --signal=TERM --kill-after=2s \
-    "${duration}" "${AQUA_BIN}" "$@"
+    "${duration}" "${AQUA_TRUST_EXEC_PATH}" "$@"
 )
 
 run_project_aqua_install() (
@@ -240,11 +352,11 @@ run_project_aqua_install() (
       'FAIL  aqua-trust    cached Aqua changed before install\n' >&2
     builtin return 1
   }
-  aqua_validate_execution_arguments "${AQUA_BIN}" || builtin return
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment || builtin return
   builtin export AQUA_ENFORCE_CHECKSUM=true
   builtin export AQUA_ENFORCE_REQUIRE_CHECKSUM=true
-  builtin exec "${AQUA_BIN}" install
+  builtin exec "${AQUA_TRUST_EXEC_PATH}" install
 )
 
 run_project_aqua_update_checksum() (
@@ -258,9 +370,9 @@ run_project_aqua_update_checksum() (
       'FAIL  aqua-trust    cached Aqua changed before checksum update\n' >&2
     builtin return 1
   }
-  aqua_validate_execution_arguments "${AQUA_BIN}" || builtin return
+  aqua_open_verified_execution "${AQUA_BIN}" || builtin return
   aqua_prepare_normal_environment allow-missing || builtin return
-  builtin exec "${AQUA_BIN}" update-checksum -prune
+  builtin exec "${AQUA_TRUST_EXEC_PATH}" update-checksum -prune
 )
 
 aqua_file_sha256_matches() {
@@ -293,7 +405,7 @@ aqua_verify_exact_version() {
   builtin local checksum_mode="${4:-required}"
   builtin local output
   builtin local status=0
-  output="$(run_project_aqua_bounded_with_checksum_mode \
+  output="$(run_verified_aqua_bounded_with_checksum_mode \
     10s "${target}" "${checksum_mode}" version)" ||
     status=$?
   if [[ "${status}" != "0" ]]; then

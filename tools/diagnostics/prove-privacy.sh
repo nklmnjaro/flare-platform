@@ -151,7 +151,8 @@ assert_privacy_capture() {
   run_host_command grep -Fq 'osc-retained' "${evidence}"
   run_host_command grep -Fq 'visible-control=true' "${evidence}"
   run_host_command grep -Fq 'visible-utf8=true' "${evidence}"
-  run_host_command grep -Fq '<path>' "${evidence}"
+  run_host_command grep -Fq '<REPO>' "${evidence}"
+  run_host_command grep -Fq '<HOME>' "${evidence}"
   run_host_command grep -Fq '<home>' "${evidence}"
   for value in auth-canary-411 password-canary-422 token-canary-433 \
     secret-canary-444 osc-secret-canary control-key-canary \

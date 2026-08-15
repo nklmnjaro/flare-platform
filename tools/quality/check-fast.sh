@@ -8,17 +8,32 @@ builtin source "${CHECK_FAST_SOURCE_DIR}/../common/env.sh"
 builtin source "${PLATFORM_ROOT}/tools/common/tooling.sh"
 unset CHECK_FAST_SOURCE_DIR
 
+GO_MODULES=()
+
 collect_shell_files() {
   run_host_command git ls-files --cached --others --exclude-standard '*.sh' |
     run_host_command grep -v '^tests/fixtures/' || true
 }
 
-check_go_tools() {
+collect_go_modules() {
+  local go_mod
+  while IFS= read -r go_mod; do
+    case "${go_mod}" in
+      tests/fixtures/*) continue ;;
+      go.mod) printf '.\n' ;;
+      *) printf '%s\n' "${go_mod%/go.mod}" ;;
+    esac
+  done < <(
+    run_host_command git ls-files --cached --others --exclude-standard -- \
+      ':(glob)**/go.mod'
+  )
+}
+
+check_go_tests() {
   local git_path
   local module
   git_path="$(host_command_path git)"
-  for module in tools/artifacts/archive tools/evidence/sanitize \
-    tools/quality/policycheck tools/recovery/capsule kubernetes/reference/server; do
+  for module in "${GO_MODULES[@]}"; do
     (
       cd "${PLATFORM_ROOT}/${module}"
       if [[ "${module}" == tools/recovery/capsule ]]; then
@@ -30,6 +45,20 @@ check_go_tools() {
       fi
     )
   done
+  printf 'PASS  go-tests      all %d Go module test suites accepted\n' \
+    "${#GO_MODULES[@]}"
+}
+
+check_go_vet() {
+  local module
+  for module in "${GO_MODULES[@]}"; do
+    (
+      cd "${PLATFORM_ROOT}/${module}"
+      run_managed_tool go vet ./...
+    )
+  done
+  printf 'PASS  go-vet        all %d Go modules accepted\n' \
+    "${#GO_MODULES[@]}"
 }
 
 check_source_policy() {
@@ -60,9 +89,16 @@ main() {
   for tool in shellcheck shfmt actionlint zizmor gofmt go; do
     require_tool "${tool}"
   done
+  mapfile -t GO_MODULES < <(collect_go_modules)
+  ((${#GO_MODULES[@]} > 0)) || {
+    printf 'FAIL  go-checks     no production Go modules discovered\n' >&2
+    return 1
+  }
 
   "${PLATFORM_ROOT}/tools/quality/repo-policy.sh"
-  check_go_tools
+  check_go_tests
+  check_go_vet
+  "${PLATFORM_ROOT}/tools/quality/prove-commit-range.sh"
   check_source_policy
   mapfile -t shell_files < <(collect_shell_files)
   if ((${#shell_files[@]})); then
@@ -72,7 +108,7 @@ main() {
     printf 'PASS  shell-format  tracked shell targets accepted\n'
   fi
   check_gofmt
-  printf 'PASS  go-checks     tests, source policy, and formatting accepted\n'
+  printf 'PASS  go-checks     tests, vet, source policy, and formatting accepted\n'
   run_managed_tool actionlint .github/workflows/*.yml
   printf 'PASS  actionlint    workflow syntax accepted\n'
   run_managed_tool zizmor --offline .github/workflows

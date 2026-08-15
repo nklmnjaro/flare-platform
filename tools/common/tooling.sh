@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# Exported tool environments are consumed by managed child processes.
+# shellcheck disable=SC2034
 builtin set -euo pipefail
 
 builtin source "${PLATFORM_ROOT}/tools/common/state.sh"
 builtin source "${PLATFORM_ROOT}/tools/bootstrap/aqua-trust.sh"
 PROCESS_STATE_MODULE_PATH="${PLATFORM_ROOT}/tools/common/process-state.sh"
 EVIDENCE_CAPTURE_SCRIPT="${PLATFORM_ROOT}/tools/common/evidence-capture.sh"
+EVIDENCE_TOOLCHAIN_ROOT="${PLATFORM_ROOT}"
+EVIDENCE_SANITIZER_DIR="${PLATFORM_ROOT}/tools/evidence/sanitize"
 # shellcheck source=process-state.sh
 builtin source "${PROCESS_STATE_MODULE_PATH}"
 
@@ -140,17 +144,6 @@ require_tool() {
   host_command_admit "${command_name}" >/dev/null
 }
 
-expect_failure() {
-  local label="$1"
-  shift
-  if "$@" >/dev/null 2>&1; then
-    builtin printf 'FAIL  red-fixture   %s unexpectedly passed\n' \
-      "${label}" >&2
-    return 1
-  fi
-  builtin printf 'PASS  red-fixture   %s rejected\n' "${label}"
-}
-
 validate_evidence_arguments() {
   local label="$1"
   local expected_status="$2"
@@ -201,24 +194,14 @@ render_evidence_file() {
   local marker="$6"
   local marker_found="$7"
   local raw_truncated="$8"
-  local payload read_status raw_size header_size remaining marker_evidence
-  local sentinel=$'\036'
+  local raw_size header_size remaining marker_evidence
+  local evidence_repository="${PLATFORM_ROOT}" evidence_home="${HOME:-}"
   local LC_ALL=C
   [[ "${PLATFORM_TEST_FORCE_EVIDENCE_RENDER_FAILURE:-}" != true ]] || return 1
   raw_size="$(run_host_command wc -c <"${raw_output}")" || return
   ((raw_size <= EVIDENCE_MAX_RAW_BYTES)) || return 1
-  payload="$({
-    run_host_command cat -- "${raw_output}" || exit 1
-    builtin printf '%s' "${sentinel}"
-  })"
-  read_status=$?
-  [[ "${read_status}" -eq 0 && "${payload: -1}" == "${sentinel}" ]] || return 1
-  payload="${payload::-1}"
-  ((${#payload} == raw_size)) || return 1
-  payload="${payload//"${PLATFORM_ROOT}"/<REPO>}"
   marker_evidence="${marker//"${PLATFORM_ROOT}"/<REPO>}"
   if [[ -n "${HOME:-}" ]]; then
-    payload="${payload//"${HOME}"/<HOME>}"
     marker_evidence="${marker_evidence//"${HOME}"/<HOME>}"
   fi
   {
@@ -234,7 +217,16 @@ render_evidence_file() {
   header_size="$(run_host_command wc -c <"${render_output}")" || return
   ((header_size <= EVIDENCE_MAX_FILE_BYTES)) || return 1
   remaining=$((EVIDENCE_MAX_FILE_BYTES - header_size))
-  builtin printf '%s' "${payload:0:remaining}" >>"${render_output}" || return
+  (
+    # A RED fixture may deliberately override PLATFORM_ROOT to exercise path
+    # redaction. Keep managed-tool admission bound to the checkout that sourced
+    # this module while passing the fixture paths only as sanitizer data.
+    PLATFORM_ROOT="${EVIDENCE_TOOLCHAIN_ROOT}"
+    prepare_evidence_sanitizer_environment || exit 1
+    builtin cd -- "${EVIDENCE_SANITIZER_DIR}" || exit 1
+    run_managed_tool go run . --payload-only --max-bytes "${remaining}" \
+      --repository "${evidence_repository}" --home "${evidence_home}"
+  ) <"${raw_output}" >>"${render_output}" || return
   [[ "$(run_host_command wc -c <"${render_output}")" -le "${EVIDENCE_MAX_FILE_BYTES}" ]]
 }
 
@@ -266,6 +258,38 @@ read_captured_status() {
   [[ "${#lines[@]}" -eq 1 && "${lines[0]}" =~ ^[0-9]+$ ]] || return 1
   ((10#${lines[0]} <= 255)) || return 1
   builtin printf '%s\n' "$((10#${lines[0]}))"
+}
+
+prepare_evidence_sanitizer_environment() {
+  local variable
+  ensure_state_directory gate-evidence/go-cache || return
+  ensure_state_directory gate-evidence/go-path/pkg/mod || return
+  ensure_state_directory gate-evidence/go-tmp || return
+  ensure_state_directory gate-evidence/home || return
+  ensure_state_directory gate-evidence/xdg/config || return
+  ensure_state_directory gate-evidence/xdg/cache || return
+  ensure_state_directory gate-evidence/xdg/data || return
+  ensure_state_directory gate-evidence/xdg/state || return
+  while IFS= builtin read -r variable; do
+    builtin unset -v "${variable}" || return
+  done < <(builtin compgen -A export GO)
+  while IFS= builtin read -r variable; do
+    builtin unset -v "${variable}" || return
+  done < <(builtin compgen -A export CGO_)
+  builtin unset AR CC CXX FC GCCGO PKG_CONFIG
+  builtin unset TMPDIR TMP TEMP TEMPDIR
+  builtin export GOENV=off GOWORK=off GOTOOLCHAIN=local
+  builtin export GOPROXY=off GOSUMDB=off CGO_ENABLED=0
+  builtin export GOCACHE="${PLATFORM_STATE_DIR}/gate-evidence/go-cache"
+  builtin export GOPATH="${PLATFORM_STATE_DIR}/gate-evidence/go-path"
+  builtin export GOMODCACHE="${GOPATH}/pkg/mod"
+  builtin export GOTMPDIR="${PLATFORM_STATE_DIR}/gate-evidence/go-tmp"
+  builtin export TMPDIR="${GOTMPDIR}" TMP="${GOTMPDIR}" TEMP="${GOTMPDIR}"
+  builtin export HOME="${PLATFORM_STATE_DIR}/gate-evidence/home"
+  builtin export XDG_CONFIG_HOME="${PLATFORM_STATE_DIR}/gate-evidence/xdg/config"
+  builtin export XDG_CACHE_HOME="${PLATFORM_STATE_DIR}/gate-evidence/xdg/cache"
+  builtin export XDG_DATA_HOME="${PLATFORM_STATE_DIR}/gate-evidence/xdg/data"
+  builtin export XDG_STATE_HOME="${PLATFORM_STATE_DIR}/gate-evidence/xdg/state"
 }
 
 expect_failure_with_marker() (

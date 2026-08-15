@@ -22,7 +22,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - name: Validate pull request commit range
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RANGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          tools/quality/check-commit-range.sh pull_request
+          "${RANGE_BASE_SHA}" "${HEAD_SHA}"
+      - name: Validate push commit range
+        if: github.event_name == 'push'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          RANGE_BASE_SHA: ${{ github.event.before }}
+        run: >-
+          tools/quality/check-commit-range.sh push
+          "${RANGE_BASE_SHA}" "${HEAD_SHA}"
+      - name: Validate manual commit history
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          tools/quality/check-commit-range.sh push
+          0000000000000000000000000000000000000000 "${HEAD_SHA}"
       - name: Bootstrap tools
         run: make bootstrap
       - name: Prove negative fixtures

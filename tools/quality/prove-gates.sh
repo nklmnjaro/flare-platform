@@ -44,24 +44,39 @@ prove_commit_policy() {
   for _ in {1..67}; do printf x >>"${message}"; done
   printf '\n' >>"${message}"
 
-  expect_failure commit-type "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-type 1 \
+    'commit title must follow Conventional Commits' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-type.txt"
-  expect_failure commit-bang "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-bang 1 \
+    'commit title must follow Conventional Commits' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-bang.txt"
-  expect_failure commit-separator "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-separator 1 \
+    'commit body must start after a blank line' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-separator.txt"
-  expect_failure commit-tab "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-tab 1 \
+    'commit message must not contain hard tabs' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-tab.txt"
-  expect_failure commit-trailing "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-trailing 1 \
+    'commit message must not contain trailing whitespace' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-trailing.txt"
-  expect_failure commit-title-length "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-title-length 1 \
+    'commit title exceeds 72 characters' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-long-title.txt"
-  expect_failure commit-body-length "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
+  expect_failure_with_marker commit-body-length 1 \
+    'commit body contains a line longer than 72 characters' 5s \
+    "${PLATFORM_ROOT}/tools/quality/check-commit-message.sh" \
     "${directory}/invalid-long-body.txt"
 }
 
 prove_unlocked_ci() {
   local directory="${PLATFORM_STATE_DIR}/aqua-ci-unlocked"
+  local restored="${directory}/aqua-restored.yaml"
   reset_state_directory "aqua-ci-unlocked" || return
   run_host_command mkdir -p \
     "${directory}/tools/bootstrap" "${directory}/tools/common"
@@ -78,7 +93,22 @@ prove_unlocked_ci() {
     "${PLATFORM_ROOT}/tools/common/tooling.sh" "${directory}/tools/common/"
   run_host_command sed 's/^  require_checksum: true$/  require_checksum: false/' \
     "${PLATFORM_ROOT}/aqua.yaml" >"${directory}/aqua.yaml"
-  run_host_command grep -Fqx '  require_checksum: false' "${directory}/aqua.yaml"
+  [[ "$(run_host_command grep -Fxc '  require_checksum: true' \
+    "${PLATFORM_ROOT}/aqua.yaml")" -eq 1 ]]
+  [[ "$(run_host_command grep -Ec '^  require_checksum: (true|false)$' \
+    "${PLATFORM_ROOT}/aqua.yaml")" -eq 1 ]]
+  [[ "$(run_host_command grep -Fxc '  require_checksum: false' \
+    "${directory}/aqua.yaml")" -eq 1 ]]
+  [[ "$(run_host_command grep -Ec '^  require_checksum: (true|false)$' \
+    "${directory}/aqua.yaml")" -eq 1 ]]
+  if run_host_command grep -Fq '  require_checksum: true' \
+    "${directory}/aqua.yaml"; then
+    printf 'FAIL  red-marker    unlocked Aqua fixture retained a true key\n' >&2
+    return 1
+  fi
+  run_host_command sed 's/^  require_checksum: false$/  require_checksum: true/' \
+    "${directory}/aqua.yaml" >"${restored}"
+  run_host_command cmp -- "${PLATFORM_ROOT}/aqua.yaml" "${restored}"
   expect_failure_with_marker aqua-ci-unlocked 1 \
     'CI requires committed Aqua checksums.' 30s \
     "${PROVE_GATES_ENV_PATH}" CI=true \
@@ -237,12 +267,13 @@ prove_literal_redaction() {
   local evidence_dir="${PLATFORM_STATE_DIR}/gate-evidence"
   local special_root='/tmp/flare #review[1]&repo'
   local supported_home='/ho''me/review-user'
+  local unrelated_home='/ho''me/unrelated-review'
   # The positional argument expands in the fixture shell.
   # shellcheck disable=SC2016
   PLATFORM_ROOT="${special_root}" expect_failure_with_marker special-path 7 marker 5s \
     "${PROVE_GATES_BASH_PATH}" -p -c \
     'printf "%s marker\n" "$1"; exit 7' _ "${special_root}"
-  run_host_command grep -Fq '<REPO> marker' \
+  run_host_command grep -Fqx '<REPO> marker' \
     "${evidence_dir}/special-path.txt"
   if run_host_command grep -Fq \
     "${special_root}" "${evidence_dir}/special-path.txt"; then
@@ -257,11 +288,23 @@ prove_literal_redaction() {
       "${PROVE_GATES_BASH_PATH}" -p -c \
       'printf "%s/.cache/tool marker\n" "$1"; exit 7' _ "${supported_home}"
   )
-  run_host_command grep -Fq '<HOME>/.cache/tool marker' \
+  run_host_command grep -Fqx '<HOME>/.cache/tool marker' \
     "${evidence_dir}/home-redaction.txt"
   if run_host_command grep -Fq \
     "${supported_home}" "${evidence_dir}/home-redaction.txt"; then
     printf 'FAIL  red-marker    supported home path was retained\n' >&2
+    return 1
+  fi
+  # The positional argument expands in the fixture shell.
+  # shellcheck disable=SC2016
+  expect_failure_with_marker unrelated-home 7 marker 5s \
+    "${PROVE_GATES_BASH_PATH}" -p -c \
+    'printf "%s/cache marker\n" "$1"; exit 7' _ "${unrelated_home}"
+  run_host_command grep -Fqx '<home>/cache marker' \
+    "${evidence_dir}/unrelated-home.txt"
+  if run_host_command grep -Fq "${unrelated_home}" \
+    "${evidence_dir}/unrelated-home.txt"; then
+    printf 'FAIL  red-marker    unrelated home path was retained\n' >&2
     return 1
   fi
 }
@@ -425,9 +468,13 @@ prove_local_gates() {
   prove_policycheck_red source-function-policy \
     'function too_large has 82 lines; max is 80' \
     tests/fixtures/policy/long-function.sh
-  expect_failure go-format run_managed_tool gofmt -d \
+  expect_failure_with_marker go-format 1 \
+    'diff tests/fixtures/go/unformatted.go.orig' 30s \
+    "${PLATFORM_ROOT}/tools/common/run-managed-tool.sh" gofmt -d \
     tests/fixtures/go/unformatted.go
-  expect_failure doctor-boundary "${PROVE_GATES_ENV_PATH}" \
+  "${PLATFORM_ROOT}/tools/quality/prove-go-vet.sh"
+  expect_failure_with_marker doctor-boundary 1 \
+    'FAIL  host-command  curl missing' 30s "${PROVE_GATES_ENV_PATH}" \
     PLATFORM_TEST_FORCE_MISSING=curl \
     "${PLATFORM_ROOT}/tools/bootstrap/doctor.sh" --base-only
   prove_unlocked_ci

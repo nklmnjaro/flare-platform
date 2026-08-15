@@ -153,18 +153,26 @@ func sanitizeText(data []byte, options sanitizeOptions) string {
 	return redactSensitiveValues(value, sensitiveFlag)
 }
 
-func redactLiteralPaths(value string, paths ...string) string {
-	filtered := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if path != "" && path != "/" {
-			filtered = append(filtered, path)
+func redactLiteralPaths(value, repository, home string) string {
+	type literalPath struct {
+		path        string
+		replacement string
+	}
+	paths := []literalPath{
+		{path: repository, replacement: "<REPO>"},
+		{path: home, replacement: "<HOME>"},
+	}
+	filtered := make([]literalPath, 0, len(paths))
+	for _, candidate := range paths {
+		if candidate.path != "" && candidate.path != "/" {
+			filtered = append(filtered, candidate)
 		}
 	}
 	sort.Slice(filtered, func(left, right int) bool {
-		return len(filtered[left]) > len(filtered[right])
+		return len(filtered[left].path) > len(filtered[right].path)
 	})
-	for _, path := range filtered {
-		value = strings.ReplaceAll(value, path, "<path>")
+	for _, candidate := range filtered {
+		value = strings.ReplaceAll(value, candidate.path, candidate.replacement)
 	}
 	return value
 }

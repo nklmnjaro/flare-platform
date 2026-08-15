@@ -2,6 +2,7 @@
 # Source module exports are consumed by callers and child processes.
 # shellcheck disable=SC2034
 builtin set -euo pipefail
+builtin umask 077
 
 PLATFORM_CALLER_HOST_PATH="${PATH-}"
 builtin export -n PLATFORM_CALLER_HOST_PATH

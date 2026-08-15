@@ -43,21 +43,68 @@ assert_existing_directory_component() {
   fi
 }
 
+state_root_security_snapshot() {
+  local path="$1"
+  local snapshot device inode owner mode
+  if [[ -L "${path}" || ! -d "${path}" ]]; then
+    builtin printf \
+      'FAIL  state-guard   generated-state root is not a regular directory: %s\n' \
+      "${path}" >&2
+    return 1
+  fi
+  snapshot="$(run_host_command stat -Lc '%d:%i:%u:%a' -- "${path}")" || return
+  IFS=: builtin read -r device inode owner mode <<<"${snapshot}"
+  if [[ -z "${device}" || -z "${inode}" || -z "${owner}" ||
+    -z "${mode}" || -L "${path}" || ! -d "${path}" ]]; then
+    builtin printf \
+      'FAIL  state-guard   generated-state root identity is unstable: %s\n' \
+      "${path}" >&2
+    return 1
+  fi
+  if [[ "${owner}" != "${EUID}" ]]; then
+    builtin printf \
+      'FAIL  state-guard   generated-state root must be owned by uid %s: %s\n' \
+      "${EUID}" "${path}" >&2
+    return 1
+  fi
+  if [[ "${mode}" != 700 ]]; then
+    builtin printf \
+      'FAIL  state-guard   generated-state root must have mode 0700: %s\n' \
+      "${path}" >&2
+    return 1
+  fi
+  builtin printf '%s\n' "${snapshot}"
+}
+
+assert_state_root_identity() {
+  local path="$1" expected="$2" current
+  current="$(state_root_security_snapshot "${path}")" || return
+  if [[ "${current}" != "${expected}" ]]; then
+    builtin printf \
+      'FAIL  state-guard   generated-state root identity changed during operation: %s\n' \
+      "${path}" >&2
+    return 1
+  fi
+}
+
 assert_existing_state_directory() {
   local relative="${1:-}"
   local current="${PLATFORM_STATE_DIR}"
-  local component
+  local component root_identity
   local -a components=()
   validate_state_relative_path "${relative}" || return
   assert_existing_directory_component "${current}" || return
   [[ -e "${current}" ]] || return 0
-  [[ -z "${relative}" ]] && return 0
-  IFS='/' builtin read -r -a components <<<"${relative}"
-  for component in "${components[@]}"; do
-    current="${current}/${component}"
-    assert_existing_directory_component "${current}" || return
-    [[ -e "${current}" ]] || return 0
-  done
+  root_identity="$(state_root_security_snapshot "${current}")" || return
+  if [[ -n "${relative}" ]]; then
+    IFS='/' builtin read -r -a components <<<"${relative}"
+    for component in "${components[@]}"; do
+      current="${current}/${component}"
+      assert_existing_directory_component "${current}" || return
+      [[ -e "${current}" ]] || break
+    done
+  fi
+  assert_state_root_identity "${PLATFORM_STATE_DIR}" "${root_identity}"
 }
 
 ensure_directory_component() {
@@ -79,22 +126,25 @@ ensure_directory_component() {
 ensure_state_directory() {
   local relative="${1:-}"
   local current="${PLATFORM_STATE_DIR}"
-  local component
+  local component root_identity
   local -a components=()
   validate_state_relative_path "${relative}" || return
   ensure_directory_component "${current}" || return
-  [[ -z "${relative}" ]] && return 0
-  IFS='/' builtin read -r -a components <<<"${relative}"
-  for component in "${components[@]}"; do
-    current="${current}/${component}"
-    ensure_directory_component "${current}" || return
-  done
+  root_identity="$(state_root_security_snapshot "${current}")" || return
+  if [[ -n "${relative}" ]]; then
+    IFS='/' builtin read -r -a components <<<"${relative}"
+    for component in "${components[@]}"; do
+      current="${current}/${component}"
+      ensure_directory_component "${current}" || return
+    done
+  fi
+  assert_state_root_identity "${PLATFORM_STATE_DIR}" "${root_identity}"
 }
 
 prepare_state_file() {
   local relative="$1"
   local parent=""
-  local target
+  local target root_identity
   validate_state_relative_path "${relative}" || return
   if [[ -z "${relative}" ]]; then
     builtin printf \
@@ -103,6 +153,7 @@ prepare_state_file() {
   fi
   [[ "${relative}" == */* ]] && parent="${relative%/*}"
   ensure_state_directory "${parent}" || return
+  root_identity="$(state_root_security_snapshot "${PLATFORM_STATE_DIR}")" || return
   target="${PLATFORM_STATE_DIR}/${relative}"
   if [[ -L "${target}" ]]; then
     builtin printf \
@@ -116,13 +167,14 @@ prepare_state_file() {
       "${target}" >&2
     return 1
   fi
+  assert_state_root_identity "${PLATFORM_STATE_DIR}" "${root_identity}" || return
   builtin printf '%s\n' "${target}"
 }
 
 reset_state_directory() {
   local relative="$1"
   local parent=""
-  local target
+  local target root_identity
   validate_state_relative_path "${relative}" || return
   if [[ -z "${relative}" ]]; then
     builtin printf 'FAIL  state-guard   reset directory path is empty\n' >&2
@@ -130,8 +182,10 @@ reset_state_directory() {
   fi
   [[ "${relative}" == */* ]] && parent="${relative%/*}"
   ensure_state_directory "${parent}" || return
+  root_identity="$(state_root_security_snapshot "${PLATFORM_STATE_DIR}")" || return
   target="${PLATFORM_STATE_DIR}/${relative}"
   assert_existing_directory_component "${target}" || return
   run_host_command rm -rf -- "${target}" || return
-  ensure_directory_component "${target}"
+  ensure_directory_component "${target}" || return
+  assert_state_root_identity "${PLATFORM_STATE_DIR}" "${root_identity}"
 }

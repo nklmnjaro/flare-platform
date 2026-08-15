@@ -195,6 +195,56 @@ prove_reset_failure_propagates() {
   printf 'PASS  state-red      failed reset propagated through conditional call\n'
 }
 
+prove_world_writable_root_rejected() {
+  local state="${WORK_DIR}/world-writable/.platform"
+  local log="${WORK_DIR}/world-writable.log"
+  run_host_command mkdir -p "${state}"
+  run_host_command chmod 0777 "${state}"
+  if PLATFORM_STATE_DIR="${state}" \
+    ensure_state_directory diagnostics >"${log}" 2>&1; then
+    printf 'FAIL  state-red      world-writable state root was accepted\n' >&2
+    return 1
+  fi
+  run_host_command grep -Fq \
+    'generated-state root must have mode 0700' "${log}"
+  [[ ! -e "${state}/diagnostics" ]]
+  printf 'PASS  state-red      world-writable state root rejected before mutation\n'
+}
+
+prove_state_root_identity_swap_rejected() {
+  local base="${WORK_DIR}/root-identity-swap"
+  local state="${base}/.platform"
+  local displaced="${base}/.platform.displaced"
+  local log="${base}/rejection.log"
+  run_host_command mkdir -p "${state}"
+  printf 'retained\n' >"${state}/sentinel.txt"
+  if (
+    local nested_calls=0
+    # Invoked indirectly by ensure_state_directory in this proof child.
+    # shellcheck disable=SC2329
+    ensure_directory_component() {
+      local path="$1"
+      if [[ "${path}" == "${state}" ]]; then
+        return 0
+      fi
+      ((nested_calls += 1))
+      if ((nested_calls == 1)); then
+        run_host_command mv -- "${state}" "${displaced}"
+        run_host_command mkdir -- "${state}"
+      fi
+      run_host_command mkdir -- "${path}"
+    }
+    PLATFORM_STATE_DIR="${state}" ensure_state_directory diagnostics
+  ) >"${log}" 2>&1; then
+    printf 'FAIL  state-red      swapped state root identity was accepted\n' >&2
+    return 1
+  fi
+  run_host_command grep -Fq \
+    'generated-state root identity changed during operation' "${log}"
+  run_host_command grep -Fqx retained "${displaced}/sentinel.txt"
+  printf 'PASS  state-red      deterministic state-root swap rejected\n'
+}
+
 prove_helper_contract() {
   local state="${WORK_DIR}/helper/.platform"
   local output
@@ -231,6 +281,8 @@ main() {
   prove_status_file_symlink_rejected
   prove_reset_symlink_rejected
   prove_reset_failure_propagates
+  prove_world_writable_root_rejected
+  prove_state_root_identity_swap_rejected
   prove_helper_contract
 }
 

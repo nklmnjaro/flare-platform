@@ -98,6 +98,20 @@ FAKE
   run_host_command chmod +x -- "${target}"
 }
 
+write_identity_marker_aqua() {
+  local target="$1" identity="$2"
+  run_host_command cat >"${target}" <<FAKE
+#!/bin/bash -p
+set -euo pipefail
+case "\${1:-}" in
+  version) builtin printf '${AQUA_VERSION}\n' ;;
+  probe) builtin printf '%s\n' ${identity@Q} >"\${PLATFORM_AQUA_IDENTITY_MARKER:?}" ;;
+  *) builtin exit 2 ;;
+esac
+FAKE
+  run_host_command chmod 0755 -- "${target}"
+}
+
 prepare_bootstrap_fixture() {
   local target="$1"
   run_host_command mkdir -p -- \
@@ -1088,6 +1102,68 @@ fi
     'PASS  aqua-red     maintenance Aqua replacement rechecked before mutation\n'
 }
 
+prove_verified_aqua_descriptor_survives_path_swap() {
+  local target="$1" marker replacement bash_path
+  marker="${target}.marker"
+  replacement="${target}/replacement-aqua"
+  prepare_fixture "${target}"
+  write_identity_marker_aqua \
+    "${target}/.platform/bootstrap/aqua" trusted
+  pin_fixture_aqua "${target}"
+  write_identity_marker_aqua "${replacement}" replacement
+  bash_path="$(host_command_path bash)"
+  # The single-quoted program intentionally expands only in the child Bash.
+  # shellcheck disable=SC2016
+  run_host_command env PLATFORM_AQUA_IDENTITY_MARKER="${marker}" \
+    "${bash_path}" -p -c '
+target=$1
+replacement=$2
+builtin cd -- "${target}"
+builtin source tools/common/env.sh
+builtin source tools/bootstrap/aqua-trust.sh
+aqua_open_verified_execution "${AQUA_BIN}"
+run_host_command mv -fT -- "${replacement}" "${AQUA_BIN}"
+"${AQUA_TRUST_EXEC_PATH}" probe
+' aqua-path-swap "${target}" "${replacement}"
+  run_host_command grep -Fqx trusted "${marker}"
+  builtin printf \
+    'PASS  aqua-red     descriptor pin defeated deterministic pathname swap\n'
+}
+
+prove_verified_aqua_descriptor_stat_failure_rejected() {
+  local target="$1" bash_path
+  prepare_fixture "${target}"
+  write_identity_marker_aqua \
+    "${target}/.platform/bootstrap/aqua" trusted
+  pin_fixture_aqua "${target}"
+  bash_path="$(host_command_path bash)"
+  # The single-quoted program intentionally expands only in the child Bash.
+  # shellcheck disable=SC2016
+  run_host_command env "${bash_path}" -p -c '
+target=$1
+builtin cd -- "${target}"
+builtin source tools/common/env.sh
+builtin source tools/bootstrap/aqua-trust.sh
+definition="$(declare -f run_host_command)"
+eval "${definition/run_host_command/original_run_host_command}"
+run_host_command() {
+  local last="${*: -1}"
+  if [[ "${1:-}" == stat && "${last}" == /proc/self/fd/* ]]; then
+    return 7
+  fi
+  original_run_host_command "$@"
+}
+set +e
+aqua_open_verified_execution "${AQUA_BIN}"
+status=$?
+set -e
+[[ "${status}" -eq "${HOST_COMMAND_UNTRUSTED_STATUS}" ]]
+[[ -z "${AQUA_TRUST_EXEC_FD:-}" && -z "${AQUA_TRUST_EXEC_PATH:-}" ]]
+' aqua-stat-failure "${target}"
+  builtin printf \
+    'PASS  aqua-red     descriptor stat failure propagated exact rejection\n'
+}
+
 prove_managed_invalid_duration_precedes_resolution() {
   local target="$1" marker output bash_path status=0
   marker="${target}.marker"
@@ -1218,6 +1294,10 @@ main() {
   prove_managed_proxy_rechecked_each_call "${WORK_DIR}/proxy-recheck"
   prove_aqua_maintenance_rechecked_each_call \
     "${WORK_DIR}/maintenance-recheck"
+  prove_verified_aqua_descriptor_survives_path_swap \
+    "${WORK_DIR}/descriptor-path-swap"
+  prove_verified_aqua_descriptor_stat_failure_rejected \
+    "${WORK_DIR}/descriptor-stat-failure"
   prove_managed_invalid_duration_precedes_resolution \
     "${WORK_DIR}/managed-duration"
   prove_bounded_aqua_cleans_descendants "${WORK_DIR}/bounded-tree"

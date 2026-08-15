@@ -18,11 +18,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FAIL  evidence      sanitizer: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stdout, "sanitizer_truncated=%t\n", result.truncated)
+	if !payloadOnlyRequested(os.Args[1:]) {
+		fmt.Fprintf(os.Stdout, "sanitizer_truncated=%t\n", result.truncated)
+	}
 	if _, err := io.Copy(os.Stdout, &sanitized); err != nil {
 		fmt.Fprintln(os.Stderr, "FAIL  evidence      sanitizer: unable to write output")
 		os.Exit(1)
 	}
+}
+
+func payloadOnlyRequested(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "--payload-only" || argument == "-payload-only" ||
+			argument == "--payload-only=true" || argument == "-payload-only=true" {
+			return true
+		}
+	}
+	return false
 }
 
 func run(arguments []string, input io.Reader, output io.Writer) (sanitizeResult, error) {
@@ -31,6 +43,7 @@ func run(arguments []string, input io.Reader, output io.Writer) (sanitizeResult,
 	repository := flags.String("repository", "", "repository path to redact")
 	home := flags.String("home", "", "current home path to redact")
 	singleLine := flags.Bool("single-line", false, "emit only the first logical line")
+	flags.Bool("payload-only", false, "omit sanitizer metadata framing")
 	if err := flags.Parse(arguments); err != nil {
 		return sanitizeResult{}, err
 	}

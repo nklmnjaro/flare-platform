@@ -91,7 +91,9 @@ func TestSanitizeRemovesControlsAndPaths(t *testing.T) {
 	if strings.Contains(value, "/tmp/repo") || strings.Contains(value, home) {
 		t.Fatalf("path retained: %q", value)
 	}
-	if !strings.Contains(value, "red") || !strings.Contains(value, "<path>") {
+	if !strings.Contains(value, "red") ||
+		!strings.Contains(value, "repo:<REPO>") ||
+		!strings.Contains(value, "home:<HOME>/cache") {
 		t.Fatalf("useful context lost: %q", value)
 	}
 	if !utf8.ValidString(value) {
@@ -160,6 +162,22 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	}
 	if _, err := run([]string{"extra"}, strings.NewReader("x"), &output); err == nil {
 		t.Fatal("positional argument was accepted")
+	}
+}
+
+func TestPayloadOnlyFlagIsAcceptedAndDetected(t *testing.T) {
+	var output bytes.Buffer
+	if _, err := run([]string{"--payload-only"}, strings.NewReader("visible\n"), &output); err != nil {
+		t.Fatalf("payload-only: %v", err)
+	}
+	if output.String() != "visible\n" {
+		t.Fatalf("unexpected payload: %q", output.String())
+	}
+	if !payloadOnlyRequested([]string{"--payload-only"}) ||
+		!payloadOnlyRequested([]string{"--payload-only=true"}) ||
+		payloadOnlyRequested([]string{"--payload-only=false"}) ||
+		payloadOnlyRequested(nil) {
+		t.Fatal("payload-only request detection failed")
 	}
 }
 
