@@ -1,6 +1,6 @@
 # ADR 0008: Repository continuity and recovery capsule
 
-Status: accepted for the integrated Task 008 candidate; final replay pending.
+Status: accepted local boundary through the Task 008R1 clean-clone replay.
 
 ## Context
 
@@ -35,6 +35,21 @@ verification.
 The bundle preserves reachable committed bytes verbatim. Recovery performs no
 secret redaction: a credential, key, or token committed anywhere in reachable
 history is part of the capsule.
+
+The selected privacy policy is exact history with an explicit Git-history
+exception. Author and committer names, email addresses, timestamps, committed
+paths, and committed content are retained because rewriting them would create a
+different history. Outer text/archive privacy scans must not claim those opaque
+bundle bytes were sanitized. The semantic recovery verifier inspects the full
+graph for the supported-state contract; it is not a generic history DLP scan.
+Packaging never rewrites accepted history implicitly.
+
+Input provenance is a separate verdict dimension: `verified`, `missing`,
+`waived`, or `mismatch`. A mismatch rejects. Missing provenance cannot produce
+an unconditional acceptance without a named owner and reason for the waiver.
+The 008R1 handoff used by the current consolidation is `verified` against its
+detached SHA-256; publisher authenticity remains unproved and is stated
+separately from byte integrity.
 
 ## Source admission
 
@@ -128,6 +143,13 @@ paths longer than 4 KiB, any file larger than 16 MiB, or a tree larger than
 trees, and 100,000 unique historical `.gitattributes` blobs, with each structural
 Git output capped at 32 MiB. These are receiver resource bounds, not a general
 repository quota.
+
+Those structural, output, and timeout bounds do not impose a hard process RSS,
+receiver-disk, or aggregate historical-uncompressed-byte quota before every Git
+operation. A capsule from an untrusted network source therefore requires an
+OS-isolated receiver with explicit resource quotas; local verification alone
+must not be described as hostile-input denial-of-service containment. The
+checksum-first immutable receiver boundary remains Task 009 work.
 
 Successful `git clone` alone is not recovery proof. Packing requires the output
 name to be absent. The capsule is assembled and semantically verified through a

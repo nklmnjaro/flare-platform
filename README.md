@@ -3,7 +3,7 @@
 Platform-owned infrastructure and delivery plumbing for Flare and future reference workloads.
 
 This repository owns reproducible tooling, GitHub CI adapters, local Kubernetes, container plumbing,
-platform security checks, release/rollback mechanics, and customer deployment runbooks.
+platform security checks, release/rollback contracts, and customer deployment runbooks.
 
 It does **not** own Flare or Poker build/test/runtime semantics. Product repositories remain the source
 of truth for their canonical `build`, `test`, `check`, and `verify` commands; CI invokes those commands
@@ -39,28 +39,32 @@ Remote Docker/BuildKit endpoints are unsupported and rejected before runtime
 mutation. Other remote infrastructure, production Kubernetes, GitOps, cloud
 provisioning, and Poker-specific runtime integration are intentionally out of
 scope until separately authorized.
-Hosted CI adapters are defined, but their external runner behavior has not yet
-been replayed and is not claimed by the local capability profile.
+Hosted CI adapters are defined, but their external runner behavior is not
+claimed by the local capability profile.
 
-The prior local promotion records remain historical evidence. Independent
-review first revoked promotion for `f2107559` and later revoked acceptance of
-the verification-environment candidate `51af7e0`. Closures 006/007 repaired the
-host-command, Aqua, local-Docker, ownership, and lifecycle boundaries. Their
-final integration baseline is commit
-`eb6d0f0c027202e78b2b5b35e18473b0079a28dc`, tree
-`95f40069a4d2776494cea35921fa55e32f9ead99`, after integrated, live
-two-checkout, bounded-concurrency, direct-clone, bundle-clone, and repeated
-runtime replay. Task 008 semantically ported diagnostics and repository recovery
-over that baseline. Task 008R1 repairs independently reproduced compound-secret,
-tool-identity, and recovery-gate ownership defects. Its exact 19-step integrated
-implementation replay passed before the final documentation amendment on commit
-`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`, tree
-`27544de541b12500c40526a391dbc906a28d492b`, after two direct clean-clone
-attempts exposed literal-path defects. Recovery test discovery now enumerates
-literal `_test.go` entries with `os.ReadDir`; diagnostics snapshot pruning uses
-root-relative literal `.git` and `.platform` selectors, and its sentinel checks
-are directory-scoped. The final docs-bearing candidate's clean-clone replay
-remains pending, so promotion is not claimed.
+The accepted source baseline is Task 008R1 commit
+`74538648b307a36b1cf1b1163c4129664cdafeb8`, tree
+`5738783d3e5ce9ce6c55c57da0e5572f3e861f9e`. Its checksum-bound handoff,
+recovery capsule, integrated replay, and final special-path clean-clone replay
+were independently reviewed. The replay completed all 19 commands, retained
+clean Git status and strict object checks, and closed the reproduced
+compound-secret, failed-tool-identity, recovery-gate ownership, and literal-path
+defects. This is acceptance of a local Platform source baseline, not a claim of
+production readiness, hosted-CI behavior, or release promotion. Subsequent
+hardening and its verification are recorded in
+`docs/evidence/PLATFORM-QUEUED-HARDENING-ACCEPTANCE-008R1__20260815.md`.
+
+## Owner quick start
+
+```bash
+make doctor && make bootstrap && make verify
+```
+
+The first bootstrap downloads only versions and checksums committed in this
+repository. `make verify` is the canonical full local proof: static and security
+checks, intentional RED proofs, the non-race recovery closure, and a disposable
+kind runtime journey. For exact side effects, cleanup, failure triage, and the
+proved/not-proved boundary, use `docs/runbooks/owner-quickstart.ru.md`.
 
 ## Entry points
 
@@ -232,11 +236,10 @@ non-zero. `check-fast` owns cheap positive checks and the fast recovery class;
 `prove-gates` adds external-tool RED fixtures and, through its Make prerequisite,
 the one full recovery closure proof. Failure propagation alone does not set gate
 maturity. Signals move to `BLOCKING` only under
-`docs/decisions/0002-quality-security-profile.md`; Task 008R1 diagnostics and
-recovery remain `ADVISORY`. The integrated implementation replay passed, but the
-exact clean-clone replay of the final docs-bearing candidate remains pending.
-Previously matured signals remain blocking, but no maturity label asserts that
-the current candidate completed its required replay.
+`docs/decisions/0002-quality-security-profile.md`. Task 008R1 diagnostics,
+recovery-class ownership, and repository recovery completed their integrated
+and clean-clone replay but remain `ADVISORY` until a separate maturity decision
+changes the profile. Previously matured signals remain blocking.
 
 Workflow security uses `zizmor --offline` against checked-in files. This keeps
 the canonical local gate deterministic and blocks on enabled offline findings,
@@ -248,3 +251,6 @@ integrated and clean replacement-worker matrices; that record does not override
 the later promotion revocation for `f2107559`. See
 `docs/decisions/0002-quality-security-profile.md` and
 `docs/evidence/PLATFORM-PROMOTION-CLOSURE-002__20260810.md`.
+
+Report vulnerabilities through `SECURITY.md`; never attach real secrets or
+unredacted workstation evidence to a public issue.

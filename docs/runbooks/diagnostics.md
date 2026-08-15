@@ -128,6 +128,7 @@ records, including the selective snapshot assertion.
 The integrated implementation replay before the final documentation amendment
 on `72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5` retained
 `make prove-diagnostics` at `39s`, two fresh `make diagnose` runs at `42s` and
-`41s`, and artifact verifications at `0s` then `1s`. This is integrated evidence,
-not promotion: the exact clean-clone replay of the final docs-bearing candidate
-is still pending.
+`41s`, and artifact verifications at `0s` then `1s`. The final special-path clean
+clone later retained diagnostics at `40s`, two diagnoses at `41s` each, and both
+artifact verifications at `0s`. These are local acceptance results, not
+production or release promotion.

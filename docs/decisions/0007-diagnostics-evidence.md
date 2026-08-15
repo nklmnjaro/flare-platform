@@ -1,6 +1,6 @@
 # ADR 0007: Fresh and private diagnostic evidence
 
-Status: accepted for the integrated Task 008 candidate; final replay pending.
+Status: accepted local boundary through the Task 008R1 clean-clone replay.
 
 ## Context
 

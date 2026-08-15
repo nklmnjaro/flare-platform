@@ -18,9 +18,12 @@ make artifact-verify ARCHIVE=/path/to/handoff.zip
 The packer:
 
 - resolves the real source and output-parent boundaries before publication;
+- pins source entries and the output parent by descriptor, reads without
+  following links, and rejects identity/content changes during collection;
 - rejects a source-directory symlink, nested symlinks, and special files;
 - refuses symlink output and detached-checksum targets;
-- uses unpredictable same-directory temporary files and atomic rename;
+- uses unpredictable exclusive same-directory staging files and atomic
+  no-replace publication;
 - accepts only portable forward-slash paths without control bytes or drive prefixes;
 - sorts paths and uses fixed ZIP timestamps;
 - stores entries without compression so verification cannot inflate a zip bomb;
@@ -32,8 +35,15 @@ The packer:
 - excludes the manifest itself and the outer output archive from that manifest;
 - allows deliberately nested ZIP inputs when a self-contained handoff needs them;
 - verifies the unpublished temporary archive before replacing the target;
-- writes and re-verifies the detached checksum after archive publication.
+- writes and re-verifies the detached checksum after archive publication;
 - emits path-free success evidence and redacts supported home prefixes from errors.
+
+ZIP and checksum publication is ordered but is not one filesystem transaction.
+If checksum publication fails after the ZIP succeeds, the valid ZIP can remain
+without its sidecar. Any non-zero pack result means “do not distribute”: success
+requires both files plus a zero `artifact-verify`. Confirm ownership of the
+exact failed output before quarantining it, or choose a new output name; never
+invent a checksum for an orphaned ZIP.
 
 The verifier requires the same canonical entry order, storage method, modes,
 timestamps, path rules, manifest format, and resource limits as the packer. It
@@ -72,6 +82,8 @@ contract for genuinely large evidence.
 - terminal Unix, macOS, root, and Windows home-directory forms;
 - per-entry, total-payload, entry-count, and outer-file limits;
 - output boundary resolution through a symlinked parent.
+- deterministic source-root, source-entry, in-place-content, output-parent,
+  publication-target, and verification-pair races;
 - current tracked and non-ignored source can package through this same boundary.
 
 The staging directory is disposable. Never edit an archive after packaging.

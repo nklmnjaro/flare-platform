@@ -72,10 +72,11 @@ and `642s` then `659s` for repeated `verify`. Before the split,
 `make prove-recovery` measured `356.296s`, raw recovery `go test ./...` measured
 `358.644s`, the race suite measured `646.395s`, and the duplicated recovery
 portion of `make prove-local` measured `317.166s`. Those older figures explain
-the split; they are not repaired-candidate success evidence. The final
-docs-bearing candidate's clean-clone transcript must retain current durations,
-and a runtime budget must never silently skip a class, reuse stale success, or
-lower assertions.
+the split; they are not repaired-candidate success evidence. The final 008R1
+clean-clone transcript retained `227s` for recovery, `213s` for local REDs,
+`458s` for gates, and `649s` then `629s` for repeated verification. A runtime
+budget must never silently skip a class, reuse stale success, or lower
+assertions.
 
 The first direct clean-clone attempt from a checkout path containing spaces and
 literal `#[]&` reached step 7 and returned status `2` from

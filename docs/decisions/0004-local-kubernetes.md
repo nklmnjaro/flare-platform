@@ -1,6 +1,6 @@
 # ADR 0004: Disposable local Kubernetes
 
-Status: Closure-007 accepted integration baseline; Task 008 replay required
+Status: accepted local boundary through the Task 008R1 replay
 
 ## Decision
 
@@ -40,6 +40,13 @@ The digest is an accidental-safety boundary between normal same-user checkouts.
 It is not authentication or protection from a hostile process running as the
 same user, and a digest value alone is never deletion authority without the
 exact live ConfigMap snapshot and lifecycle lease.
+
+A random project-local ownership token was considered and deliberately not
+treated as authentication: another hostile process with the same UID can read
+or replace that token, while token loss makes an otherwise owned cluster
+ambiguous. The deterministic canonical checkout binding instead provides
+reproducible cross-clone separation. The documented boundary remains accidental
+same-user safety, not a security sandbox.
 
 ## Host-local lifecycle lease
 
@@ -215,9 +222,9 @@ live two-checkout, bounded-concurrency, direct-clone, bundle-clone, and repeated
 runtime replays on 2026-08-12. The earlier candidate record remains historical:
 `docs/evidence/PLATFORM-LOCAL-RUNTIME-ISOLATION-AND-CONCURRENCY-007__20260811.md`.
 
-Task 008 changes the diagnostic read/publication boundary and therefore needs a
-new final live and clean-clone replay. That replay is not claimed by the
-Closure-007 result.
+Task 008 changed the diagnostic read/publication boundary and therefore needed
+a new final live and clean-clone replay. Task 008R1 completed that replay; the
+historical Closure-007 result alone did not claim it.
 
 ## Non-goals
 

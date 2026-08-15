@@ -1,7 +1,7 @@
 # ADR 0002: Quality and security profile
 
-Status: Task 008R1 integrated implementation replay passed before the final
-documentation amendment; final docs-bearing clean-clone replay required
+Status: Task 008R1 integrated and final special-path clean-clone replays passed;
+consolidation hardening is tracked in the current acceptance record
 
 ## Decision
 
@@ -20,7 +20,8 @@ This is a repository contract, not an organization-wide policy.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | source limits | policycheck | hidden giant source glue | exact 120/80 policy | long line/function | low | low | check-fast | BLOCKING |
 | Go format | gofmt | noncanonical Go source | language-native formatting | unformatted Go | low | low | check-fast | BLOCKING |
-| commit contract | repository script | untraceable history | exact Flare grammar | malformed messages | low | low | hook/prove-local | BLOCKING |
+| Go semantic checks | go vet | suspicious constructs missed by compilation | every production Go module | compiling printf misuse | low | low | check-fast/prove-local | BLOCKING |
+| commit contract | repository scripts | untraceable history | exact event commit DAG and Flare grammar | malformed branch/merge/initial history | low | low | hook/check-fast/CI | BLOCKING |
 | shell correctness | ShellCheck | shell defects | semantic shell analysis | invalid shell | low-medium | low | check-fast | BLOCKING |
 | shell format | shfmt | inconsistent shell layout | deterministic formatting | unformatted shell | low | low | check-fast | BLOCKING |
 | workflow syntax | actionlint | invalid Actions YAML/expressions | GitHub workflow semantics | invalid workflow | low | low | check-fast | BLOCKING |
@@ -39,12 +40,31 @@ This is a repository contract, not an organization-wide policy.
 | recovery class boundary | Go test allowlists and active sentinel RED | slow closure enters fast checks or silently disappears | structural fast/closure ownership | closure-in-fast/unclassified/disappeared | low | low | check-fast/prove-local | ADVISORY |
 | repository recovery | recovery capsule helper | incomplete or ambiguous repository handoff | exact three-file full-history recovery | dirty/hidden/shallow/ref/race/tamper/process | low | high | prove-recovery | ADVISORY |
 
+`check-fast` discovers tracked and untracked production `go.mod` files while
+excluding intentional fixtures. It runs both the appropriate test class and an
+explicit `go vet ./...` in every discovered module. The vet RED fixture first
+compiles with test-time vet disabled, then must fail the standard printf
+analyzer for one deliberate type mismatch; an unrelated compilation failure or
+an incidental finding cannot satisfy that proof.
+
+CI validates commit messages over the event graph, not only the checkout tip.
+For pull requests it checks `base..head` using the real PR head rather than the
+synthetic merge commit. For ordinary pushes it checks `before..head`; a zero
+`before` on an initial push checks every commit reachable from `head`. A manual
+dispatch applies that same full-history rule to its selected `HEAD`. The checkout
+supplies the complete object graph; traversal follows merge parents and
+validates every in-range non-merge commit. The validator fails closed for an
+unavailable base/before, an empty range, or a range larger than 4096 commits.
+Local fixtures cover good and bad ranges, merge topology, initial push, and
+unavailable base behavior.
+
 For signals already mature at `BLOCKING` before Task 008, promotion evidence
 must still show the exact pinned tools running every RED fixture and the real
 positive targets in both the integrated checkout and a clean clone. A missing
 candidate replay prevents promotion but does not demote those already-mature
 repository contracts. This rule does not pre-promote the new Task 008 rows;
-diagnostics and recovery remain `ADVISORY` until their required replay passes.
+diagnostics and recovery remain `ADVISORY` after replay until a separate
+maturity decision changes the profile.
 
 Implementation `42e877c489afe8347e4f5a797d453838c95a59c0` satisfied that
 contract in both its integrated checkout and a clean replacement-worker clone.
@@ -90,8 +110,10 @@ replay passed before the final documentation amendment on commit
 `check-fast`, `15s` for `check`, and `642s` then `659s` for `verify`. Historical
 pre-repair measurements were `356.296s` for `make prove-recovery`, `358.644s`
 for raw recovery `go test ./...`, `646.395s` for the race suite, and `317.166s`
-for the duplicated recovery portion of `make prove-local`. The exact clean-clone
-durations for the final docs-bearing candidate remain pending.
+for the duplicated recovery portion of `make prove-local`. The final 008R1
+special-path clean clone recorded `40s` for diagnostics, `227s` for recovery,
+`213s` for local RED proofs, `458s` for gates, `15s` for `check-fast`, `18s` for
+`check`, and `649s` then `629s` for repeated `verify`.
 
 A pre-fix direct clean-clone attempt from a path containing spaces and literal
 `#[]&` reached step 7 and returned status `2` from `make prove-recovery` after
@@ -109,17 +131,19 @@ a directory-scoped top-level `! -name sentinel.txt` check. Production changes
 directory to the admitted root before pruning literal `./.git` and
 `./.platform` entries. A `source [x] #[]&` regression proves state-path
 mutations are ignored while a tracked-file mutation changes the digest. The
-exact integrated matrix ran only after both repairs; the final docs-bearing
-clean-clone replay is still pending.
+exact integrated matrix ran only after both repairs. The later final
+special-path clean-clone matrix passed against
+`74538648b307a36b1cf1b1163c4129664cdafeb8`.
 
 The diagnostics signal owns stale-current confusion, generated-evidence
 privacy, strict tool identity, and ownership-before-read. The recovery signal
 owns exact committed repository materialization and complete object-graph
 verification. Diagnostics, the recovery class boundary, and recovery remain
-`ADVISORY` in this record. The integrated implementation matrix passed, but the
-exact clean-clone matrix must still pass against the final docs-bearing commit.
-A runtime budget never authorizes a skip, stale success file, reduced assertion
-level, or warning-only failure.
+`ADVISORY` in this record. Both required 008R1 matrices passed; replay does not
+automatically promote an advisory signal to blocking. A runtime budget never
+authorizes a skip, stale success file, reduced assertion level, or warning-only
+failure. See
+`docs/evidence/PLATFORM-QUEUED-HARDENING-ACCEPTANCE-008R1__20260815.md`.
 
 ## Workflow security boundary
 

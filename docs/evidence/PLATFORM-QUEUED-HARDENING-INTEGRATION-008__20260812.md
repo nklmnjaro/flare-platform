@@ -6,6 +6,16 @@ Status: `008R1 INTEGRATED REPLAY PASSED; FINAL CLEAN-CLONE REPLAY PENDING`
 
 Promotion: `NOT CLAIMED`
 
+Supersession note (2026-08-15): this file is the pre-handoff source record, so
+its pending statements are intentionally historical. The immutable 008R1
+handoff later bound commit
+`74538648b307a36b1cf1b1163c4129664cdafeb8`, tree
+`5738783d3e5ce9ce6c55c57da0e5572f3e861f9e`, to a passing 19-step final
+special-path clean-clone replay. Independent review and subsequent hardening are
+recorded in
+`PLATFORM-QUEUED-HARDENING-ACCEPTANCE-008R1__20260815.md`. Promotion remains a
+separate decision.
+
 ## Exact integration baseline
 
 The semantic port starts from the final Closure-007 candidate:

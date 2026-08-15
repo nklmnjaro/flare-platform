@@ -1,6 +1,6 @@
 # ADR 0006: Capability-based verification environment
 
-Status: Closure-007 candidate implemented locally; final live and clean replay required
+Status: accepted local boundary through the Task 008R1 replay
 
 ## Decision
 
@@ -162,8 +162,7 @@ host version. Hosted GitHub behavior, non-Linux systems, other architectures,
 remote Docker/BuildKit, remote Kubernetes, cloud provisioning, registries, and
 production remain unsupported, unverified, or out of scope until separately
 authorized. The Closure-006 implementation snapshot is
-`cbc68e9c019f87cc2420d7c0fea97271ca234918`; final live runtime and clean-clone
-acceptance replay are still pending. Closure-007 preserves that execution-trust
-baseline and adds checkout-bound lifecycle ownership and serialization. The
-final combined live and clean-clone replay is still pending, so promotion is not
-claimed.
+`cbc68e9c019f87cc2420d7c0fea97271ca234918`. Closure-007 preserved that
+execution-trust baseline and added checkout-bound lifecycle ownership and
+serialization. Task 008R1 later completed integrated and final clean-clone
+replay. That local result does not claim hosted or production promotion.

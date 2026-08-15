@@ -2,13 +2,16 @@
 
 Tool versions are changed in `aqua.yaml`, not scattered across scripts or CI.
 
-For the initial bootstrap on an online host:
+For ordinary first use on an online host:
 
 1. run `make bootstrap`;
-2. run `make tool-lock`;
-3. confirm `aqua-checksums.json` is non-empty and `require_checksum: true` is set;
-4. run `make bootstrap` again to prove the locked configuration is idempotent;
-5. commit `aqua.yaml` and `aqua-checksums.json` together.
+2. run `CI=true make bootstrap` if CI admission also needs local proof;
+3. do not run `make tool-lock` and do not modify either tracked lock file.
+
+The committed `aqua-checksums.json` and `require_checksum: true` setting are the
+ordinary install boundary. `make tool-lock` is a maintainer-only mutation used
+after an intentional version or registry change; it is never a repair step for
+a normal bootstrap failure.
 
 For a later tool update:
 

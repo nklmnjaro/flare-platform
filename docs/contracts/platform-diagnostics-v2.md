@@ -1,10 +1,9 @@
 # Platform diagnostics contract v2
 
-Status: Task 008R1 integrated implementation replay passed before the final
-documentation amendment on commit
-`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`, tree
-`27544de541b12500c40526a391dbc906a28d492b`; final docs-bearing candidate
-clean-clone replay is required.
+Status: Task 008R1 integrated implementation and final special-path clean-clone
+replays passed. The clean clone used commit
+`74538648b307a36b1cf1b1163c4129664cdafeb8`, tree
+`5738783d3e5ce9ce6c55c57da0e5572f3e861f9e`.
 
 ## Purpose
 
@@ -123,6 +122,12 @@ must verify archive structure, internal manifest, limits, and checksum before
 the archive is moved to its final path. The detached checksum is published
 last. An interrupted or failed run therefore cannot expose a stale or mixed
 pair as current evidence.
+
+The underlying artifact helper cannot publish two names in one filesystem
+transaction: a checksum-publication failure may leave the newly published ZIP
+without a sidecar. That incomplete output is never a current diagnostic pair;
+the collector reports failure, and consumers require both names plus successful
+pair verification.
 
 This is process-interruption-safe publication. It is not a claim of
 power-loss-durable filesystem transactions or multi-host serialization.

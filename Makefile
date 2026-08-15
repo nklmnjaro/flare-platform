@@ -14,7 +14,7 @@ help:
 	  'doctor         inspect host prerequisites' \
 	  'environment-evidence print bounded environment evidence' \
 	  'bootstrap      install pinned project tools' \
-	  'tool-lock      generate checksums and enforce them' \
+	  'tool-lock      maintainer-only checksum lock refresh' \
 	  'hooks          install pre-commit and commit-msg hooks' \
 	  'check-fast     cheap local static checks' \
 	  'check          full static and security checks' \
@@ -31,12 +31,12 @@ help:
 	  'prove-recovery-race run the recovery closure under Go race detection' \
 	  'diagnose       collect bounded local diagnostics' \
 	  'verify-runtime verify disposable Kubernetes runtime' \
-	  'verify         full static + disposable kind verification' \
+	  'verify         full local static, RED, recovery, and kind proof' \
 	  'kind-up        create isolated disposable kind cluster' \
 	  'kind-smoke     build/load/probe reference workload' \
 	  'kind-negative  prove runtime diagnostics on bad workload' \
 	  'kind-down      delete only the project kind cluster' \
-	  'clean          remove project-local generated state'
+	  'clean          tear down owned kind cluster and remove .platform'
 
 doctor:
 	@tools/bootstrap/doctor.sh

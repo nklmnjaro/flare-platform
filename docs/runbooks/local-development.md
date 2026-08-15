@@ -59,27 +59,26 @@ prerequisite runs `make prove-recovery` once, then its script runs the local and
 external-tool RED fixtures. Direct `make prove-local` does not acquire that Make
 prerequisite.
 
-The runtime record below includes the integrated implementation replay before
-the final documentation amendment, retained for commit
-`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5`. The final docs-bearing candidate's
-clean-clone replay remains pending. A measurement is a planning input, never
-permission for a silent skip, stale success cache, reduced assertion set, or
-`|| true`.
+The runtime record below includes the integrated implementation replay on
+`72f3f1ad22c1f2ebdf4063e587a4f71390ec8ef5` and the final special-path clean
+clone on `74538648b307a36b1cf1b1163c4129664cdafeb8`. A measurement is a planning
+input, never permission for a silent skip, stale success cache, reduced
+assertion set, or `|| true`.
 
 | Command or class | Unique signal and recovery ownership | Retained wall time |
 | --- | --- | --- |
 | recovery fast class | deterministic unit/classification; fast recovery only | `0.027-0.029s` after R3 |
-| `make check-fast` | cheap positive source/tool checks; fast recovery only | focused `12.723s`; integrated `14s` |
-| `make prove-local` | offline RED plus active recovery class boundary; no full recovery | integrated `203s` |
-| `make prove-gates` | one full recovery prerequisite plus local/external RED | integrated `448s` |
-| `make check` | `check-fast` plus positive Hadolint, Trivy, schema, and policy targets | integrated `15s` |
-| `make prove-recovery` | sole full non-race recovery owner | integrated `237s`; old `356.296s` |
-| `make verify` | check, admitted recursive `make prove-gates`, and disposable runtime | integrated `642s`, then `659s` |
+| `make check-fast` | cheap positive source/tool checks; fast recovery only | integrated `14s`; clean `15s` |
+| `make prove-local` | offline RED plus active recovery class boundary; no full recovery | integrated `203s`; clean `213s` |
+| `make prove-gates` | one full recovery prerequisite plus local/external RED | integrated `448s`; clean `458s` |
+| `make check` | `check-fast` plus positive Hadolint, Trivy, schema, and policy targets | integrated `15s`; clean `18s` |
+| `make prove-recovery` | sole full non-race recovery owner | integrated `237s`; clean `227s` |
+| `make verify` | check, admitted recursive `make prove-gates`, and disposable runtime | integrated `642s`/`659s`; clean `649s`/`629s` |
 | `make prove-recovery-race` | separate race-enabled closure lane | not in matrix; old `646.395s` |
 
 The old timings are comparison evidence, not repaired-candidate acceptance.
-The clean-clone replay must record every canonical command's measured duration
-and stay within its runner budgets without dropping a signal.
+The clean-clone replay recorded every canonical command and stayed within its
+runner budgets without dropping a signal.
 The two pre-fix direct-clone literal-path REDs and their distinct recovery and
 diagnostics repairs are retained in the Task 008 integration evidence; neither
 failed attempt counts as clean-clone acceptance.

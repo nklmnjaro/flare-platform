@@ -1,6 +1,6 @@
 # ADR 0003: Project-local tool bootstrap
 
-Status: Closure-007 candidate implemented; final live and clean replay required
+Status: accepted local boundary through Task 008R1; promotion remains separate
 
 ## Decision
 
@@ -131,10 +131,11 @@ boundaries. The later verification-environment candidate
 host-command admission, normal Aqua execution, local Docker selection, and the
 pristine environment proof remained incomplete. Closure-006 continues from
 that exact candidate and has an implementation snapshot at
-`cbc68e9c019f87cc2420d7c0fea97271ca234918`; final live and clean-clone replay
-remain pending. Closure-007 preserves those tool boundaries while adding
-checkout ownership and the shared lifecycle rendezvous. The final combined live
-and clean-clone replay remains pending, so promotion is still unclaimed.
+`cbc68e9c019f87cc2420d7c0fea97271ca234918`. Closure-007 preserved those tool
+boundaries while adding checkout ownership and the shared lifecycle rendezvous;
+Task 008R1 then passed its integrated and final clean-clone matrices. These
+later results supersede the old pending replay state without turning source
+acceptance into release promotion.
 
 ## Host prerequisites
 
